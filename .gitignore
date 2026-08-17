@@ -1,0 +1,10 @@
+node_modules/
+dist/
+
+# Secrets, but keep the documented template.
+.env
+.env.*
+!.env.example
+
+*.log
+.DS_Store

@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="mn">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Усион Олимп</title>
+    <!-- Path B: the app loads the SDK itself (the platform only injects it for
+         static AI-Creator bundles). Outside the Usion host it no-ops, so the
+         lobby still runs in a plain browser tab. -->
+    <script src="https://usions.com/usion-sdk.js"></script>
+    <!-- The platform-hosted 3D runtime. This exact pinned URL is the only 3D
+         engine a Usion app may load — any other CDN is stripped at deploy, and
+         three.js is not permitted. Cached once per device across all Usion
+         games. Havok is deliberately NOT loaded: the avatars are rendered, not
+         simulated, so there is no physics and no iOS<16.4 WASM cliff. -->
+    <script src="https://usions.com/vendor/babylon/9.16.1/babylon.js"></script>
+  </head>
+  <body class="bg-neutral-950">
+    <div id="root"></div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>
