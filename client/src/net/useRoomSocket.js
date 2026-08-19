@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { io } from 'socket.io-client';
 import { pushSnapshot, updateClock } from './interpolation.js';
 
-const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3200';
+export const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:3200';
 const SEAT_KEY = 'usion-olympics:seat';
 
 /** A stable per-device id so a refresh reclaims the same seat, not a new one. */
@@ -50,7 +50,12 @@ export function useRoomSocket() {
 
   useEffect(() => {
     const socket = io(SERVER_URL, {
-      transports: ['websocket'],
+      // WebSocket first, but NOT websocket-only. Over the open internet the
+      // upgrade is sometimes blocked outright — hotel wifi, corporate proxies,
+      // a few mobile carriers — and with no fallback the game simply never
+      // connects. Polling is slower and chattier; it is also the difference
+      // between a degraded game and no game.
+      transports: ['websocket', 'polling'],
       auth: {
         // Inside Usion this is where the platform access token goes
         // (Usion.game._fetchDirectAccess); outside it, a dev identity.
@@ -80,7 +85,15 @@ export function useRoomSocket() {
 
     socket.on('disconnect', () => setConnection('disconnected'));
     socket.io.on('reconnect_attempt', () => setConnection('reconnecting'));
-    socket.on('connect_error', () => setConnection('disconnected'));
+
+    // Surface WHY the handshake failed. Without this a rejected connection —
+    // the server requiring a Usion token, a CORS origin not on the allow-list —
+    // is indistinguishable from a slow network, and the player stares at
+    // "connecting…" forever with nothing to report.
+    socket.on('connect_error', (err) => {
+      setConnection('disconnected');
+      setError({ code: err?.data?.code ?? 'NETWORK', message: err?.message });
+    });
 
     socket.on('catalog', setCatalog);
     socket.on('room:state', setRoom);

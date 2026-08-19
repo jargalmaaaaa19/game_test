@@ -1,10 +1,12 @@
 node_modules/
 dist/
 
-# Secrets, but keep the documented template.
+# Secrets live in *.local only — Vite's convention. Committed .env files hold
+# public config (the room server URL), which is not a secret and which makes a
+# fresh deploy work with no dashboard setup.
 .env
-.env.*
-!.env.example
+.env.local
+.env.*.local
 
 *.log
 .DS_Store

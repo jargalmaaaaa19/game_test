@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { PHASE } from '@shared/constants.js';
 import { DEFAULT_BUILD, DEFAULT_HAIR, DEFAULT_OUTFIT, DEFAULT_SKIN } from '@shared/avatars.js';
 import { DEFAULT_COUNTRY } from '@shared/countries.js';
-import { t } from './i18n.js';
-import { useRoomSocket } from './net/useRoomSocket.js';
+import { t, errorText } from './i18n.js';
+import { SERVER_URL, useRoomSocket } from './net/useRoomSocket.js';
 import HomePage from './components/HomePage.jsx';
 import LobbyPage from './components/LobbyPage.jsx';
 import SprintScreen from './components/SprintScreen.jsx';
@@ -117,10 +117,20 @@ export default function App({ hostConfig }) {
   if (connection !== 'connected' && !room) {
     return (
       <div className="grid min-h-full place-items-center px-6 text-center">
-        <div>
+        <div className="max-w-xs">
           <p className="text-sm text-neutral-400">
             {connection === 'reconnecting' ? t.reconnecting : t.connecting}
           </p>
+          {error && (
+            <>
+              <p className="mt-3 rounded-xl bg-red-500/10 px-4 py-3 text-sm text-red-300">
+                {errorText(error)}
+              </p>
+              {/* The address it is failing against — the first thing anyone
+                  needs when a deploy points at the wrong server. */}
+              <p className="mt-2 break-all text-[11px] text-neutral-600">{SERVER_URL}</p>
+            </>
+          )}
           <p className="mt-2 text-xs text-neutral-600">{t.appName}</p>
         </div>
       </div>

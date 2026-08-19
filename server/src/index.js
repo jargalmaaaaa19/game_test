@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { Server } from 'socket.io';
 import { SWEEP_INTERVAL_MS } from '../../shared/constants.js';
-import { config } from './config.js';
+import { config, isAllowedOrigin } from './config.js';
 import { log } from './log.js';
 import { RoomStore } from './store.js';
 import { authMiddleware } from './auth.js';
@@ -19,7 +19,7 @@ const http = createServer((req, res) => {
 });
 
 const io = new Server(http, {
-  cors: { origin: config.corsOrigins, credentials: true },
+  cors: { origin: (origin, cb) => cb(null, isAllowedOrigin(origin)), credentials: true },
   // Mobile WebViews background aggressively; a short ping timeout turns an app
   // switch into a disconnect. The room's own grace window is the real backstop.
   pingInterval: 20_000,
