@@ -42,8 +42,21 @@ http.listen(config.port, () => {
     devTools: config.devTools,
     uniqueFlags: config.uniqueFlags,
   });
+  // Say the posture out loud, with the reason. The failure this replaces was
+  // invisible from the logs: the box looked healthy and refused every player.
   if (!config.authRequired) {
-    log.warn('server.auth_disabled', { hint: 'set USION_AUTH_REQUIRED=true before deploying' });
+    log.warn('server.auth_disabled', {
+      why: 'no USION_SERVICE_ID configured, so no platform token could ever validate',
+      effect: 'anyone with the URL can open a room',
+      fix: 'set USION_SERVICE_ID (or USION_AUTH_REQUIRED=true) for anything real',
+    });
+  }
+  if (config.corsOrigins.length === 0) {
+    log.warn('server.cors_open', {
+      why: 'CORS_ORIGINS is unset',
+      effect: 'any browser origin may connect',
+      fix: 'set CORS_ORIGINS to your domains, e.g. https://your-app.vercel.app',
+    });
   }
 });
 

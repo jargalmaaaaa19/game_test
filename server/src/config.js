@@ -19,13 +19,33 @@ export const config = {
 
   // Origins allowed to open a socket. Entries may contain `*` in the hostname,
   // e.g. `https://*.vercel.app` — see isAllowedOrigin below.
-  corsOrigins: list(process.env.CORS_ORIGINS).length
-    ? list(process.env.CORS_ORIGINS)
-    : ['http://localhost:5173', 'http://localhost:3000'],
+  //
+  // Unset means allow any origin, and that is deliberate. CORS exists to stop a
+  // hostile page using a victim's AMBIENT credentials; this server has none —
+  // no cookies, no session, just a token the client presents explicitly. So the
+  // only thing a wrong allow-list achieves here is breaking the polling
+  // fallback for real players on networks that block WebSockets, silently,
+  // because the WebSocket transport is not subject to CORS at all and hides the
+  // mistake until someone's carrier blocks it. Narrow it when you know your
+  // domains; do not leave a deployment broken to satisfy a control that is not
+  // guarding anything.
+  corsOrigins: list(process.env.CORS_ORIGINS),
 
-  // Verify the Usion RS256 access token on connect. Leave ON in production —
-  // without it anybody can open a socket and claim any player id.
-  authRequired: bool(process.env.USION_AUTH_REQUIRED, process.env.NODE_ENV === 'production'),
+  // Verify the Usion RS256 access token on connect.
+  //
+  // The default follows whether this server is WIRED TO USION, not NODE_ENV.
+  // Tokens are minted by the platform for a specific service, so a deployment
+  // with no service id can never receive a valid one: keying the default off
+  // NODE_ENV meant a plain Railway box (Railway sets NODE_ENV=production)
+  // demanded a token nothing could produce and rejected 100% of its traffic.
+  // A gate that cannot be opened is not security, it is downtime.
+  //
+  // Set USION_AUTH_REQUIRED explicitly to force it either way — and DO turn it
+  // on for anything real: without it, whoever has the URL can open a room.
+  authRequired: bool(
+    process.env.USION_AUTH_REQUIRED,
+    Boolean(process.env.USION_SERVICE_ID || process.env.USION_TOKEN_AUDIENCE),
+  ),
   jwksUrl: process.env.USION_JWKS_URL || 'https://usions.com/.well-known/jwks.json',
   tokenIssuer: process.env.USION_TOKEN_ISSUER || 'https://usions.com',
   tokenAudience: process.env.USION_TOKEN_AUDIENCE || process.env.USION_SERVICE_ID || '',
@@ -102,5 +122,7 @@ function originMatches(pattern, origin) {
 export function isAllowedOrigin(origin) {
   // No Origin header at all: health checks, curl, native app WebViews.
   if (!origin) return true;
+  // No allow-list configured: see the note on corsOrigins above.
+  if (config.corsOrigins.length === 0) return true;
   return config.corsOrigins.some((pattern) => originMatches(pattern, origin));
 }
