@@ -304,19 +304,23 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
           continue;
         }
 
-        // A cue that has LANDED stops on the hit line and shows its side; one
-        // still on its way slides toward the line BLANK.
+        // Every cue carries its arrow the whole way down the lane, so the next
+        // few strokes can be read before they arrive and the hands can already
+        // be on the right side when one lands. What the approach does NOT buy
+        // is a head start: the window still opens the instant the cue reaches
+        // the line, and a press before that is a splash. Knowing which side is
+        // coming is preparation; the score is still how fast you answer it.
         //
-        // Blank is the whole mechanic. Reveal the side during the approach and
-        // everyone just presses on the beat: every reaction is zero, the
-        // impulse ramp pays them all the same, and the event scores nothing.
+        // A cue that has landed stops on the line and lights up; the ones still
+        // coming ride in muted, so which one is live is never in question.
         const landed = until <= 0;
         const side = sideOf(latest.sides, index);
+        const face = side === 0 ? 'left' : 'right';
         node.style.opacity = '1';
         node.style.left =
           `${(HIT_AT + (Math.max(until, 0) / LOOKAHEAD_MS) * (100 - HIT_AT)).toFixed(2)}%`;
-        node.dataset.cue = landed ? (side === 0 ? 'left' : 'right') : 'coming';
-        node.textContent = landed ? (side === 0 ? ARROW.left : ARROW.right) : '';
+        node.dataset.cue = landed ? face : `next-${face}`;
+        node.textContent = side === 0 ? ARROW.left : ARROW.right;
       }
 
       // The judgement flash fades on its own so a miss does not linger.
@@ -415,8 +419,10 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
               className="absolute top-1/2 grid h-11 w-11 -translate-x-1/2 -translate-y-1/2 place-items-center
                          rounded-xl text-lg font-bold leading-none will-change-[left] transition-colors
                          duration-75
-                         data-[cue=coming]:border-2 data-[cue=coming]:border-dashed
-                         data-[cue=coming]:border-white/35 data-[cue=coming]:bg-white/5
+                         data-[cue=next-left]:border-2 data-[cue=next-left]:border-amber-300/60
+                         data-[cue=next-left]:bg-amber-400/20 data-[cue=next-left]:text-amber-200
+                         data-[cue=next-right]:border-2 data-[cue=next-right]:border-violet-300/60
+                         data-[cue=next-right]:bg-violet-400/20 data-[cue=next-right]:text-violet-200
                          data-[cue=left]:bg-amber-400 data-[cue=left]:text-neutral-950
                          data-[cue=left]:ring-4 data-[cue=left]:ring-amber-300/50
                          data-[cue=right]:bg-violet-400 data-[cue=right]:text-neutral-950

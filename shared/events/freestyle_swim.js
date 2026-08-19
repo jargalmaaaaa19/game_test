@@ -5,17 +5,19 @@
 // toward the hit line, so the beat the player sees is the beat the server
 // judges.
 //
-// A REACTION event, not a rhythm one. Cues arrive on a fixed beat, each calling
-// for a LEFT or RIGHT stroke, and the side is drawn fresh from the match seed
-// every cue — no turn-taking, so it cannot be drummed out from memory. The
-// clock on a cue starts the instant it lands: answer it correctly and the
-// FASTER you were, the harder you pull. Answer it on the wrong side, or let the
-// window run out, and you stall.
+// Cues arrive on a fixed beat, each calling for a LEFT or RIGHT stroke, and the
+// side is drawn fresh from the match seed every cue — no turn-taking, so it
+// cannot be drummed out from memory. The clock on a cue starts the instant it
+// lands: answer it correctly and the FASTER you were, the harder you pull.
+// Answer it on the wrong side, or let the window run out, and you stall.
 //
-// The beat is therefore only a metronome for WHEN a cue appears. It is not what
-// is being scored — which is why the client must not reveal a cue's side before
-// it lands. Show it early and every player simply presses on the beat, every
-// reaction is zero, and the event scores nothing at all.
+// The whole pattern goes out on the wire and the lane SHOWS it coming, so a
+// player can read the next few strokes and have the right thumb ready. What
+// that buys is preparation, not a head start: the window opens when the cue
+// reaches the line and not a millisecond earlier, and a press before then is a
+// splash that costs speed and consumes nothing (see `applyInput`). That
+// penalty is what keeps a known pattern from collapsing into hammering both
+// buttons on the beat — you still have to wait for the cue and then be quick.
 
 export const DISTANCE_M = 50;
 export const COUNTDOWN_MS = 2_500;
