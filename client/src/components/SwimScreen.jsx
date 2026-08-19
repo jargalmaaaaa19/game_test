@@ -1,20 +1,38 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   BEAT_MS,
   DISTANCE_M,
   TOTAL_BEATS,
-  WINDOW,
+  REACT_MS,
   beatTime,
   sideOf,
 } from '@shared/events/freestyle_swim.js';
-import { serverNow } from '../net/interpolation.js';
+import { babylon } from '../avatar3d/portraits.js';
+import { createSwimArena } from '../arena3d/swimArena.js';
+import { BUFFER_MS, sampleAt, serverNow } from '../net/interpolation.js';
 import { t, lang } from '../i18n.js';
 import Flag from './Flag.jsx';
+import SwimLanes from './SwimLanes.jsx';
 
 // How far ahead the cue lane shows. Two and a bit beats is enough to read the
 // next stroke without turning the screen into sheet music.
 const LOOKAHEAD_MS = BEAT_MS * 2.6;
 const CUES_DRAWN = 5;
+
+// Where the hit line sits across the cue lane, as a percentage of its width.
+// Cues enter at 100% and are struck here.
+const HIT_AT = 18;
+
+// The cue tiles carry an arrow, not a word: "БАРУУН" does not fit in a tile a
+// thumb's width across, and at speed a direction is read faster than a label
+// anyway. The buttons underneath keep the words, colour-matched to the tiles.
+const ARROW = { left: '←', right: '→' };
+
+// Placings change a handful of times in a fifty; sorting the field at 60fps to
+// learn nothing is pure garbage. Marker POSITIONS still move every frame.
+const RANK_INTERVAL_MS = 150;
+
+const MEDAL_TONE = ['#ffd23f', '#dbe4ee', '#e8834a'];
 
 /**
  * 50m Freestyle.
@@ -24,22 +42,76 @@ const CUES_DRAWN = 5;
  * module the server runs, off `startsAt` — a SERVER timestamp — so the beat
  * drawn here is the beat scored there.
  *
- * Cue motion is animation and lives on rAF. Distance, combo, times and the
- * scoreboard live on an interval, because a hidden tab stops rAF dead and a
- * frozen scoreboard reads as a crash. (Archery taught this one.)
+ * Cue motion and the pool are animation and live on rAF. Distance, combo,
+ * times and the standings live on an interval, because a hidden tab stops rAF
+ * dead and a frozen scoreboard reads as a crash. (Archery taught this one.)
  */
 export default function SwimScreen({ room, me, netRef, sendInput, event }) {
-  const laneRefs = useRef(new Map());
+  const rootRef = useRef(null);
+  const canvasRef = useRef(null);
+  const arenaRef = useRef(null);
+  const laneRefs = useRef(new Map()); // flat fallback only
   const cueRefs = useRef([]);
   const judgeRef = useRef(null);
   const clockRef = useRef(null);
+  const placeRef = useRef(null);
+  const markerRefs = useRef([]);
+  const distRefs = useRef([]);
   const rafRef = useRef(0);
   const sigRef = useRef('');
 
+  const drawnRef = useRef({});
+  const rankRef = useRef([]);
+  const nextRankAt = useRef(0);
+
   const [snap, setSnap] = useState(null);
+  const [arenaOk, setArenaOk] = useState(() => Boolean(babylon()));
+  const [leaders, setLeaders] = useState([]);
+
   const myId = me?.id;
   const mine = snap?.a?.[myId] ?? null;
   const players = room.players;
+  const byId = useMemo(() => new Map(players.map((p) => [p.id, p])), [players]);
+
+  // --- the arena ----------------------------------------------------------
+  const laneDraw = room.lanes;
+  useEffect(() => {
+    const B = babylon();
+    const canvas = canvasRef.current;
+    if (!B || !canvas) return undefined;
+
+    let arena = null;
+    let dead = false;
+
+    // Never build against a 0x0 canvas: the buffer it produces stays 0x0 for
+    // the life of the engine, and an embedded host reveals its iframe AFTER
+    // load. Wait for a real size, then boot.
+    const boot = () => {
+      if (dead || arena || canvas.clientWidth === 0 || canvas.clientHeight === 0) return;
+      try {
+        arena = createSwimArena(B, canvas, { players, lanes: laneDraw, myId });
+        arenaRef.current = arena;
+      } catch {
+        arena = null;
+        setArenaOk(false); // the flat lanes take over
+      }
+    };
+
+    const observer = new ResizeObserver(() => {
+      boot();
+      arena?.resize();
+    });
+    observer.observe(canvas);
+    boot();
+
+    return () => {
+      dead = true;
+      observer.disconnect();
+      arenaRef.current = null;
+      arena?.dispose();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [myId]);
 
   // --- input --------------------------------------------------------------
   useEffect(() => {
@@ -65,7 +137,7 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
     };
 
     window.addEventListener('keydown', onKey);
-    const root = document.querySelector('[data-swim-root]');
+    const root = rootRef.current;
     root?.addEventListener('pointerdown', onDown);
     return () => {
       window.removeEventListener('keydown', onKey);
@@ -106,23 +178,96 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
     return () => clearInterval(id);
   }, [myId, netRef]);
 
-  // --- cue lane + swimmers, on rAF ----------------------------------------
+  /**
+   * Placings from what is being DRAWN, not from the last packet: the badge
+   * over a swimmer's head has to agree with the swimmer under it. Same rule as
+   * the sim's own `placements`.
+   */
+  const rankOrder = useCallback((drawn) => {
+    const ids = Object.keys(drawn);
+    ids.sort((a, b) => {
+      const x = drawn[a];
+      const y = drawn[b];
+      if (x.done !== y.done) return x.done ? -1 : 1;
+      if (x.done && y.done && x.time !== y.time) return (x.time ?? 0) - (y.time ?? 0);
+      return y.x - x.x;
+    });
+    return ids.slice(0, 3);
+  }, []);
+
+  // --- pool, cue lane and badges, on rAF ----------------------------------
   useEffect(() => {
-    const frame = () => {
+    let last = performance.now();
+
+    const frame = (now) => {
       rafRef.current = requestAnimationFrame(frame);
+      const dt = Math.min((now - last) / 1000, 0.05);
+      last = now;
+
       const net = netRef.current;
       const latest = net.buffer[net.buffer.length - 1]?.s;
       if (!latest) return;
-      const now = serverNow(net);
+      const sNow = serverNow(net);
       const a = latest.a?.[myId];
+      const started = sNow >= latest.s;
 
-      // Every swimmer's position, straight to the DOM.
+      // Positions are interpolated a fixed slice into the past so the swimmers
+      // glide at 60fps off a 20 Hz feed; the BEAT is read from the newest
+      // packet instead, because a cue drawn 100ms late is a cue judged wrong.
+      const smooth = sampleAt(net, net.lastServerT - BUFFER_MS, ['x', 'v']);
+      const drawn = drawnRef.current;
+
       for (const player of players) {
+        const p = smooth?.a?.[player.id] ?? latest.a?.[player.id];
+        if (!p) continue;
+        const slot = drawn[player.id]
+          ?? (drawn[player.id] = { x: 0, v: 0, done: false, time: null });
+        slot.x = Math.max(0, Math.min(p.x, DISTANCE_M));
+        slot.done = Boolean(p.d);
+        slot.v = slot.done ? 0 : Math.max(0, p.v ?? 0);
+        slot.time = p.t ?? null;
+
         const node = laneRefs.current.get(player.id);
-        const p = latest.a?.[player.id];
-        if (!node || !p) continue;
-        node.style.left = `${Math.min(100, (p.x / DISTANCE_M) * 100).toFixed(2)}%`;
-        node.dataset.done = p.d ? '1' : '0';
+        if (node) {
+          node.style.left = `${((slot.x / DISTANCE_M) * 100).toFixed(2)}%`;
+          node.dataset.done = slot.done ? '1' : '0';
+        }
+      }
+
+      const arena = arenaRef.current;
+      if (arena) {
+        arena.render(dt, { athletes: drawn, started, myId });
+
+        if (now >= nextRankAt.current) {
+          nextRankAt.current = now + RANK_INTERVAL_MS;
+          const top = rankOrder(drawn);
+          if (top.join('|') !== rankRef.current.join('|')) {
+            rankRef.current = top;
+            setLeaders(top);
+          }
+        }
+
+        for (let i = 0; i < 3; i += 1) {
+          const node = markerRefs.current[i];
+          if (!node) continue;
+          const id = rankRef.current[i];
+          const at = started && id ? arena.headScreenPos(id) : null;
+          if (!at) {
+            node.style.opacity = '0';
+            continue;
+          }
+          node.style.opacity = '1';
+          node.style.transform = `translate3d(${at.x}px, ${at.y}px, 0) translate(-50%, -100%)`;
+          const dist = distRefs.current[i];
+          if (dist) dist.textContent = `${(drawn[id]?.x ?? 0).toFixed(0)}м`;
+        }
+
+        // Only the top three wear a badge, so the local player needs their own
+        // line — being seventh is the thing they most want to know.
+        if (placeRef.current && drawn[myId]) {
+          placeRef.current.textContent =
+            `${t.place(placeAmong(drawn, myId))} · ${drawn[myId].x.toFixed(0)}м`;
+        }
       }
 
       if (!a) return;
@@ -130,15 +275,21 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
       // The server's beat pointer is up to one tick + one latency stale, so a
       // cue it has already expired can still be sitting on the hit line here —
       // and the player presses for a beat that is gone. Take whichever is
-      // further along: the pointer, or the first cue the clock says is still
-      // alive.
+      // further along: the pointer, or the first cue the clock says is alive.
       const firstAlive = Math.max(
         0,
-        Math.ceil((now - beatTime(latest.s, 0) - WINDOW.ok) / BEAT_MS),
+        Math.ceil((sNow - beatTime(latest.s, 0) - REACT_MS) / BEAT_MS),
       );
       const base = Math.max(a.b, firstAlive);
 
-      // Cues slide right-to-left toward the hit line at 0%.
+      // Cues slide right-to-left onto the hit line.
+      //
+      // Positioned by `left`, as a percentage OF THE LANE. It used to be a
+      // percentage translateX — which is a percentage of the CUE, forty pixels
+      // — so every cue in the lookahead landed within forty pixels of the hit
+      // line, printed on top of one another. Writing `transform` also wiped
+      // the centring the class had set, dropping each cue half its own height
+      // out of the lane and into the row underneath it.
       for (let k = 0; k < CUES_DRAWN; k += 1) {
         const node = cueRefs.current[k];
         if (!node) continue;
@@ -147,21 +298,30 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
           node.style.opacity = '0';
           continue;
         }
-        const until = beatTime(latest.s, index) - now;
-        if (until > LOOKAHEAD_MS || until < -WINDOW.ok * 1.5) {
+        const until = beatTime(latest.s, index) - sNow;
+        if (until > LOOKAHEAD_MS || until < -REACT_MS) {
           node.style.opacity = '0';
           continue;
         }
+
+        // A cue that has LANDED stops on the hit line and shows its side; one
+        // still on its way slides toward the line BLANK.
+        //
+        // Blank is the whole mechanic. Reveal the side during the approach and
+        // everyone just presses on the beat: every reaction is zero, the
+        // impulse ramp pays them all the same, and the event scores nothing.
+        const landed = until <= 0;
+        const side = sideOf(latest.sides, index);
         node.style.opacity = '1';
-        node.style.transform = `translateX(${((until / LOOKAHEAD_MS) * 100).toFixed(2)}%)`;
-        node.dataset.side = String(sideOf(latest.sides, index));
-        node.dataset.next = k === 0 ? '1' : '0';
-        node.textContent = sideOf(latest.sides, index) === 0 ? t.swimL : t.swimR;
+        node.style.left =
+          `${(HIT_AT + (Math.max(until, 0) / LOOKAHEAD_MS) * (100 - HIT_AT)).toFixed(2)}%`;
+        node.dataset.cue = landed ? (side === 0 ? 'left' : 'right') : 'coming';
+        node.textContent = landed ? (side === 0 ? ARROW.left : ARROW.right) : '';
       }
 
       // The judgement flash fades on its own so a miss does not linger.
       if (judgeRef.current) {
-        const age = now - (a.ja ?? 0);
+        const age = sNow - (a.ja ?? 0);
         const show = a.j && age < 650;
         judgeRef.current.textContent = show ? t.swimJudge[a.j] ?? '' : '';
         judgeRef.current.dataset.grade = show ? a.j : 'none';
@@ -170,122 +330,198 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
 
     rafRef.current = requestAnimationFrame(frame);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [myId, netRef, players]);
+  }, [myId, netRef, players, rankOrder]);
 
   return (
-    <div data-swim-root className="flex min-h-full touch-none select-none flex-col px-5 py-6">
-      <header className="flex items-baseline justify-between">
-        <p className="label mb-0">{event?.name?.[lang] ?? event?.name?.en}</p>
-        <p ref={clockRef} className="font-mono text-lg font-bold tabular-nums">–</p>
-      </header>
+    <div
+      ref={rootRef}
+      data-swim-root
+      className={[
+        'relative flex min-h-full touch-none select-none flex-col',
+        arenaOk ? 'overflow-hidden' : 'px-5 py-6',
+      ].join(' ')}
+    >
+      {arenaOk ? (
+        <canvas ref={canvasRef} className="absolute inset-0 h-full w-full outline-none" aria-hidden="true" />
+      ) : null}
 
-      {/* The pool, seen from above */}
-      <div className="relative mt-4 overflow-hidden rounded-xl border border-sky-900/60 bg-sky-950/50 p-1.5">
-        <div className="absolute inset-y-0 right-1.5 w-1 bg-white/70" />
-        <div className="flex flex-col gap-1">
-          {players.map((player) => (
-            <div
-              key={player.id}
-              className={[
-                'relative h-7 rounded border',
-                player.id === myId ? 'border-white/40 bg-sky-900/40' : 'border-sky-900/40 bg-sky-900/20',
-              ].join(' ')}
-            >
-              <Flag code={player.country} className="absolute left-1 top-1/2 h-2.5 w-3.5 -translate-y-1/2" />
-              <div
-                ref={(node) => {
-                  if (node) laneRefs.current.set(player.id, node);
-                  else laneRefs.current.delete(player.id);
-                }}
-                style={{ left: '0%' }}
-                className="absolute top-1/2 h-3 w-5 -translate-y-1/2 rounded-full bg-sky-300 will-change-[left]
-                           data-[done='1']:bg-emerald-400"
-              />
-            </div>
+      {/* Rank badges. Three slots, one per medal position — a badge belongs to
+          the PLACE, not to a swimmer, so a lead change moves it. */}
+      {arenaOk ? (
+        <div className="pointer-events-none absolute inset-0 overflow-hidden">
+          {[0, 1, 2].map((i) => (
+            <RankMarker
+              key={i}
+              rank={i + 1}
+              player={byId.get(leaders[i])}
+              nodeRef={(node) => { markerRefs.current[i] = node; }}
+              distRef={(node) => { distRefs.current[i] = node; }}
+            />
           ))}
         </div>
-      </div>
+      ) : null}
 
-      {/* The cue lane: markers slide left onto the hit line */}
-      <div className="relative mt-5 h-16 overflow-hidden rounded-xl border border-neutral-800 bg-neutral-900/70">
-        <div className="absolute inset-y-0 left-[14%] w-0.5 -translate-x-1/2 bg-white/60" />
-        <div className="absolute inset-y-0 left-[14%] w-16 -translate-x-1/2 rounded bg-white/5" />
-        <div className="absolute inset-y-0 left-[14%] right-0">
+      <header
+        className={[
+          'relative flex items-start justify-between',
+          arenaOk ? 'px-4 pt-4' : '',
+        ].join(' ')}
+      >
+        <p
+          className={[
+            'label mb-0',
+            arenaOk ? 'text-white/75 [text-shadow:0_1px_4px_rgba(0,0,0,0.9)]' : '',
+          ].join(' ')}
+        >
+          {event?.name?.[lang] ?? event?.name?.en}
+        </p>
+        {/* The clock reads as an instrument, not a caption — a black box in the
+            corner, the way every pool in the world shows it. */}
+        <p
+          ref={clockRef}
+          className={[
+            'font-mono text-lg font-bold tabular-nums',
+            arenaOk ? 'rounded-lg border border-white/15 bg-black/70 px-3 py-1 text-white' : '',
+          ].join(' ')}
+        >
+          –
+        </p>
+      </header>
+
+      {arenaOk ? <div className="flex-1" /> : (
+        <SwimLanes players={players} myId={myId} snap={snap} laneRefs={laneRefs} />
+      )}
+
+      <div className={arenaOk ? 'relative px-4 pb-7' : 'pb-2'}>
+        {/* The cue lane. One job: which side is coming, and when.
+            The judgement flashes INSIDE it, over the hit line, because that is
+            where the player is already looking — as its own item in a row it
+            was a third thing competing for a strip only wide enough for two. */}
+        <div
+          className={[
+            'relative h-24 overflow-hidden rounded-2xl border',
+            arenaOk ? 'border-white/15 bg-black/55' : 'mt-5 border-neutral-800 bg-neutral-900/70',
+          ].join(' ')}
+        >
+          <div
+            className="absolute inset-y-2 w-14 -translate-x-1/2 rounded-xl border border-white/25 bg-white/10"
+            style={{ left: `${HIT_AT}%` }}
+          />
           {Array.from({ length: CUES_DRAWN }, (_, k) => (
             <div
               key={k}
               ref={(node) => { cueRefs.current[k] = node; }}
-              style={{ opacity: 0, transform: 'translateX(100%)' }}
-              className="absolute top-1/2 grid h-10 w-10 -translate-y-1/2 place-items-center rounded-lg
-                         text-sm font-bold will-change-transform
-                         data-[side='0']:bg-amber-400/25 data-[side='0']:text-amber-200
-                         data-[side='1']:bg-violet-400/25 data-[side='1']:text-violet-200
-                         data-[next='1']:ring-2 data-[next='1']:ring-white/70"
+              style={{ opacity: 0, left: '100%' }}
+              className="absolute top-1/2 grid h-11 w-11 -translate-x-1/2 -translate-y-1/2 place-items-center
+                         rounded-xl text-lg font-bold leading-none will-change-[left] transition-colors
+                         duration-75
+                         data-[cue=coming]:border-2 data-[cue=coming]:border-dashed
+                         data-[cue=coming]:border-white/35 data-[cue=coming]:bg-white/5
+                         data-[cue=left]:bg-amber-400 data-[cue=left]:text-neutral-950
+                         data-[cue=left]:ring-4 data-[cue=left]:ring-amber-300/50
+                         data-[cue=right]:bg-violet-400 data-[cue=right]:text-neutral-950
+                         data-[cue=right]:ring-4 data-[cue=right]:ring-violet-300/50"
             />
           ))}
+          <p
+            ref={judgeRef}
+            data-grade="none"
+            className="pointer-events-none absolute inset-x-0 top-1.5 text-center text-xs font-bold
+                       [text-shadow:0_1px_3px_rgba(0,0,0,0.9)]
+                       data-[grade=perfect]:text-emerald-300
+                       data-[grade=good]:text-sky-300
+                       data-[grade=ok]:text-neutral-300
+                       data-[grade=miss]:text-red-400
+                       data-[grade=wrong]:text-red-400
+                       data-[grade=splash]:text-amber-400"
+          />
+        </div>
+
+        {/* One status line, two items, each pinned to its own edge. Three
+            competing items in a 390px row is how the place, the judgement and
+            the combo ended up printed through one another. */}
+        <div className="mt-2 flex items-baseline justify-between gap-4">
+          <span
+            ref={placeRef}
+            className={[
+              'min-w-0 truncate text-xs font-semibold tabular-nums',
+              arenaOk ? 'text-white/85 [text-shadow:0_1px_4px_rgba(0,0,0,0.9)]' : 'text-neutral-400',
+            ].join(' ')}
+          />
+          <span
+            className={[
+              'shrink-0 text-xs tabular-nums',
+              arenaOk ? 'text-white/70 [text-shadow:0_1px_4px_rgba(0,0,0,0.9)]' : 'text-neutral-400',
+            ].join(' ')}
+          >
+            {t.swimCombo(mine?.c ?? 0)}
+          </span>
+        </div>
+
+        {/* Colour-matched to the cues above them, so which side is a glance
+            rather than a word to read mid-stroke. */}
+        <div className="mt-3 grid grid-cols-2 gap-3">
+          <StrokeButton side={0} label={t.swimL} glass={arenaOk} />
+          <StrokeButton side={1} label={t.swimR} glass={arenaOk} />
         </div>
       </div>
-
-      <p
-        ref={judgeRef}
-        data-grade="none"
-        className="mt-3 h-6 text-center text-sm font-bold
-                   data-[grade=perfect]:text-emerald-400
-                   data-[grade=good]:text-sky-300
-                   data-[grade=ok]:text-neutral-300
-                   data-[grade=miss]:text-red-400
-                   data-[grade=wrong]:text-red-400
-                   data-[grade=splash]:text-amber-400"
-      />
-
-      <div className="flex items-center justify-between text-xs text-neutral-400">
-        <span>{t.swimDistance((mine?.x ?? 0).toFixed(1), DISTANCE_M)}</span>
-        <span>{t.swimCombo(mine?.c ?? 0)}</span>
-      </div>
-
-      <div className="mt-4 grid grid-cols-2 gap-3">
-        <button data-side="0" type="button" className="btn-secondary h-24 text-lg">
-          {t.swimL}
-        </button>
-        <button data-side="1" type="button" className="btn-secondary h-24 text-lg">
-          {t.swimR}
-        </button>
-      </div>
-      <p className="mt-2 text-center text-xs text-neutral-500">{t.swimHint}</p>
-
-      <Scoreboard room={room} snap={snap} meId={myId} />
     </div>
   );
 }
 
-function Scoreboard({ room, snap, meId }) {
-  const rows = room.players
-    .map((p) => ({ player: p, a: snap?.a?.[p.id] }))
-    .sort((x, y) => {
-      const ax = x.a ?? {};
-      const by = y.a ?? {};
-      if (Boolean(ax.d) !== Boolean(by.d)) return ax.d ? -1 : 1;
-      if (ax.d && by.d) return (ax.t ?? 0) - (by.t ?? 0);
-      return (by.x ?? 0) - (ax.x ?? 0);
-    });
+/** Where `id` sits in the full field, 1-based. */
+function placeAmong(drawn, id) {
+  let place = 1;
+  const me = drawn[id];
+  for (const [other, a] of Object.entries(drawn)) {
+    if (other === id) continue;
+    const ahead = a.done !== me.done
+      ? a.done
+      : a.done && me.done
+        ? (a.time ?? 0) < (me.time ?? 0)
+        : a.x > me.x;
+    if (ahead) place += 1;
+  }
+  return place;
+}
 
+/** One medal position's badge, floating over whoever currently holds it. */
+function RankMarker({ rank, player, nodeRef, distRef }) {
+  const tone = MEDAL_TONE[rank - 1];
   return (
-    <ul className="mt-auto space-y-1 pt-5">
-      {rows.map(({ player, a }) => (
-        <li
-          key={player.id}
-          className={[
-            'flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm',
-            player.id === meId ? 'bg-white/10' : 'bg-neutral-900/60',
-          ].join(' ')}
-        >
-          <Flag code={player.country} className="h-3 w-4.5" />
-          <span className="min-w-0 flex-1 truncate">{player.name}</span>
-          <span className="font-mono text-xs tabular-nums text-neutral-400">
-            {a?.d ? `${(a.t / 1000).toFixed(2)}s` : `${(a?.x ?? 0).toFixed(1)}м`}
-          </span>
-        </li>
-      ))}
-    </ul>
+    <div ref={nodeRef} className="absolute left-0 top-0 flex flex-col items-center opacity-0 will-change-transform">
+      <div className="flex items-center gap-1 rounded-full border border-white/15 bg-black/60 px-2 py-0.5">
+        {player ? <Flag code={player.country} className="h-2.5 w-3.5 shrink-0" /> : null}
+        <span className="text-[11px] font-bold leading-none" style={{ color: tone }}>
+          {t.placeShort(rank)}
+        </span>
+        <span ref={distRef} className="font-mono text-[11px] font-semibold leading-none tabular-nums text-white" />
+      </div>
+      <svg width="16" height="10" viewBox="0 0 16 10" aria-hidden="true">
+        <path d="M0 0h16L8 10Z" fill={tone} />
+      </svg>
+    </div>
+  );
+}
+
+function StrokeButton({ side, label, glass }) {
+  const tint = side === 0
+    ? 'border-amber-300/70 bg-amber-400/20 text-amber-100 active:bg-amber-400/45'
+    : 'border-violet-300/70 bg-violet-400/20 text-violet-100 active:bg-violet-400/45';
+  return (
+    <button
+      type="button"
+      data-side={side}
+      className={[
+        'flex h-20 items-center justify-center gap-2 rounded-2xl border-2',
+        'text-base font-bold tracking-wide transition active:scale-95',
+        glass ? tint : 'border-neutral-800 bg-neutral-900 text-neutral-100 active:bg-neutral-800',
+      ].join(' ')}
+    >
+      <span aria-hidden="true" className="text-xl leading-none">
+        {side === 0 ? ARROW.left : ARROW.right}
+      </span>
+      {label}
+    </button>
   );
 }

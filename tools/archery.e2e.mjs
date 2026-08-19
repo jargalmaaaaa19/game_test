@@ -5,7 +5,7 @@
 //   node tools/archery.e2e.mjs
 
 import { io } from 'socket.io-client';
-import archery, { ARROWS_PER_ATHLETE, aimAt, powerAt } from '../shared/events/archery.js';
+import archery, { ARROWS_PER_ATHLETE, aimThatCancels } from '../shared/events/archery.js';
 
 const URL = process.env.SMOKE_URL || 'http://localhost:3200';
 
@@ -36,40 +36,28 @@ const waitFor = (s, event, ms = 90_000) =>
   });
 
 /**
- * Plays like the real client: reads its own stage and stageAt off the snapshot,
- * evaluates the SAME pure sweep function, and sends what it saw.
+ * Plays like the real client: reads its own arrow count off the snapshot,
+ * picks a stick position, and looses.
  */
 function autoArcher(socket, playerId, style, clock) {
-  let lastSentStage = null;
+  let sentFor = -1;
   let lastSentAt = 0;
 
   socket.on('game:snapshot', ({ s }) => {
     const a = s.a?.[playerId];
-    if (!a || a.st === 'done') return;
+    if (!a || a.d) return;
     const now = clock();
     if (now < s.s) return;
 
-    const key = `${a.st}:${a.sa}`;
-    if (key === lastSentStage || now - lastSentAt < 220) return;
+    const arrow = a.sh.length;
+    if (arrow === sentFor || now - lastSentAt < 400) return;
+    sentFor = arrow;
+    lastSentAt = now;
 
-    const wind = s.w[a.sh.length] ?? { x: 0, y: 0 };
-    if (a.st === 'aim') {
-      const live = aimAt({ stageAt: a.sa }, now);
-      // Aim as close to the ideal as the sweep currently allows — the server
-      // only accepts values within one round trip of its own reading.
-      const want = style === 'good' ? -(wind.x * 0.55) / 0.72 / 0.9 : 0.9;
-      const v = Math.max(live - 0.3, Math.min(live + 0.3, want));
-      lastSentStage = key;
-      lastSentAt = now;
-      socket.emit('game:input', { t: 'aim', v });
-    } else {
-      const live = powerAt({ stageAt: a.sa }, now);
-      const want = style === 'good' ? 0.72 : 0.4;
-      const v = Math.max(live - 0.25, Math.min(live + 0.25, want));
-      lastSentStage = key;
-      lastSentAt = now;
-      socket.emit('game:input', { t: 'power', v });
-    }
+    const wind = s.w[arrow] ?? { x: 0, y: 0 };
+    // The good archer leans into the wind; the wild one yanks the stick.
+    const aim = style === 'good' ? aimThatCancels(wind) : { x: 0.95, y: -0.9 };
+    socket.emit('game:input', aim);
   });
 }
 
@@ -96,7 +84,7 @@ const run = async () => {
   const play = await waitFor(host, 'game:play');
   check('play phase carries the event + a first frame', Boolean(play.event && play.state));
   check(`${ARROWS_PER_ATHLETE} winds generated`, play.state.w?.length === ARROWS_PER_ATHLETE, play.state.w);
-  check('every archer starts on the aim stage', Object.values(play.state.a).every((a) => a.st === 'aim'));
+  check('every archer starts with no arrows away', Object.values(play.state.a).every((a) => a.sh.length === 0));
 
   const offset = play.t - Date.now();
   const clock = () => Date.now() + offset;

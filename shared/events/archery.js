@@ -1,46 +1,46 @@
 // Archery.
 //
 // PURE: no DOM, no Node, no Math.random(), no Date.now(). The server runs this
-// as the authority; the client runs the SAME module to draw the sweeping aim
-// marker and the power gauge, so what the player sees is what the server
-// scores.
+// as the authority; the client runs the SAME module to place its reticle, so
+// where the player sees the arrow go is where the server scores it.
 //
-// Two taps per arrow: the first locks the ANGLE off a marker sweeping across
-// the target, the second locks POWER off a gauge sweeping up and down. Three
-// arrows each, all against the same wind, and the wind is what turns "tap
-// twice" into a decision.
+// AIM AND LOOSE. A stick moves a reticle over the target; a separate button
+// looses the arrow. Three arrows each, all against the same wind, and the wind
+// is the whole decision — point at the gold and it drifts, point off into the
+// wind by the right amount and it does not.
+//
+// This replaced a pair of timed sweeps (a marker sliding across for angle, a
+// gauge bouncing for power). Two things fell out of the change:
+//
+//  1. It is much more forgiving, which is the point — this is a party game, not
+//     a shooting sim. A player who never touches the stick still looses down
+//     the middle and only loses what the wind takes, so nobody is ever left
+//     with nothing on the scoreboard.
+//  2. There is nothing left to cheat. The old sweeps had to be sampled against
+//     the server clock and bounded, or a modded client could report the perfect
+//     instant every time. An aim is not a measurement, it is a CHOICE — a
+//     perfect client and a perfect player send the same number — so the server
+//     takes it as given and only clamps the range.
 
 export const ARROWS_PER_ATHLETE = 3;
 export const COUNTDOWN_MS = 2_500;
 export const MAX_ROUND_MS = 42_000;
 
-// Sweep periods. Angle is the slower, more forgiving one; power is where the
-// tension lives.
-export const AIM_PERIOD_MS = 1_800;
-export const POWER_PERIOD_MS = 1_100;
+// How far off the gold a fully deflected stick points, in target radii. Past
+// 1.0 on purpose: overshooting the target has to be possible or there is no
+// cost to yanking the stick, and the wind sometimes needs more than a radius
+// of correction.
+export const AIM_REACH = 1.3;
 
-// A tap closer than this to the previous one is a double-fire, not a decision.
-const MIN_TAP_INTERVAL_MS = 120;
+// Wind's authority, in target radii at full strength. Around 0.55 the gold is
+// still reachable in the worst wind, but only if you actually correct for it.
+const WIND_PULL = 0.55;
 
-// Ballistics, in target radii (1.0 = the outer ring's edge).
-const SPREAD = 0.9; // how far a full-left/right aim throws the arrow
-const POWER_IDEAL = 0.72; // the power that flies flat
-const DROP = 2.2; // how hard an under- or over-powered shot misses vertically
-const WIND_PULL = 0.55; // wind's authority, before power divides it
+// Two arrows closer together than this are a double-fire, not two decisions.
+const MIN_SHOT_INTERVAL_MS = 250;
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
-
-/** Triangle wave in [-1, 1] — sweeps out and back rather than snapping around. */
-function triangle(elapsed, period) {
-  const x = ((elapsed % period) + period) % period / period;
-  return x < 0.5 ? x * 4 - 1 : 3 - x * 4;
-}
-
-/** Where the aim marker is right now, in [-1, 1]. */
-export const aimAt = (athlete, now) => triangle(now - athlete.stageAt, AIM_PERIOD_MS);
-
-/** Where the power gauge is right now, in [0, 1]. */
-export const powerAt = (athlete, now) => (triangle(now - athlete.stageAt, POWER_PERIOD_MS) + 1) / 2;
+const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
 
 /**
  * Ring score from the distance to the centre, in target radii.
@@ -51,14 +51,25 @@ export function ringScore(r) {
   return 11 - Math.max(1, Math.ceil(r * 10));
 }
 
-/** Where an arrow lands, in target radii from the centre. */
-export function landing(aim, power, wind) {
-  const p = clamp(power, 0.35, 1);
+/**
+ * Where an arrow loosed at `aim` lands, in target radii from the centre.
+ *
+ * `aim` is the stick, each axis in [-1, 1], +y up. The reticle the player is
+ * looking at sits at `aim * AIM_REACH`; the wind is added on top, which is
+ * exactly why the reticle is not a promise.
+ */
+export function landing(aim, wind) {
   return {
-    dx: aim * SPREAD + (wind.x * WIND_PULL) / p,
-    dy: (POWER_IDEAL - power) * DROP + (wind.y * WIND_PULL) / p,
+    dx: clamp(num(aim?.x), -1, 1) * AIM_REACH + num(wind?.x) * WIND_PULL,
+    dy: clamp(num(aim?.y), -1, 1) * AIM_REACH + num(wind?.y) * WIND_PULL,
   };
 }
+
+/** Where to point to cancel a given wind — the bot's target, and the answer. */
+export const aimThatCancels = (wind) => ({
+  x: clamp((-num(wind?.x) * WIND_PULL) / AIM_REACH, -1, 1),
+  y: clamp((-num(wind?.y) * WIND_PULL) / AIM_REACH, -1, 1),
+});
 
 export default {
   id: 'archery',
@@ -74,58 +85,41 @@ export default {
       });
     }
 
+    const startsAt = now + COUNTDOWN_MS;
     const athletes = {};
     for (const { playerId, lane } of seats) {
       athletes[playerId] = {
         lane,
-        stage: 'aim', // 'aim' -> 'power' -> back to 'aim', or 'done'
-        stageAt: now + COUNTDOWN_MS,
-        aim: 0,
         shots: [], // { dx, dy, score }
         score: 0,
         best: 0,
-        lastTapAt: 0,
+        done: false,
+        // Zero, NOT the start gun: seeding it with `startsAt` put the very
+        // first arrow inside its own guard window, so nobody could loose for a
+        // quarter of a second after the countdown and a quick player's opener
+        // vanished.
+        lastShotAt: 0,
       };
     }
-    return { startsAt: now + COUNTDOWN_MS, endsAt: now + COUNTDOWN_MS + MAX_ROUND_MS, winds, athletes };
+    return { startsAt, endsAt: startsAt + MAX_ROUND_MS, winds, athletes };
   },
 
   /**
-   * One tap. `input.t` is 'aim' or 'power'; `input.v` is the value the player
-   * actually saw on their screen.
+   * One arrow. `input.x` and `input.y` are the stick, each in [-1, 1], +y up.
    *
-   * The value is taken from the CLIENT, then bounded against what this server's
-   * own clock says the sweep should read. Sampling purely on the server would
-   * charge every player their ping — you release on the bullseye and score a 7.
-   * Trusting the client outright would let a modded one send 0.72 every time.
-   * So: accept the player's number when it is within one plausible round trip
-   * of ours, otherwise use ours.
+   * Taken at face value and merely clamped — see the note at the top of the
+   * file. The only thing worth defending against here is the button being held
+   * down or scripted, which the interval covers.
    */
   applyInput(state, playerId, input, now) {
     const a = state.athletes[playerId];
-    if (!a || a.stage === 'done' || now < state.startsAt) return;
-    if (!input || (input.t !== 'aim' && input.t !== 'power')) return;
-    if (input.t !== a.stage) return; // out of order: ignore rather than guess
-    if (now - a.lastTapAt < MIN_TAP_INTERVAL_MS) return;
-    a.lastTapAt = now;
-
-    const reported = typeof input.v === 'number' && Number.isFinite(input.v) ? input.v : null;
-
-    if (a.stage === 'aim') {
-      const server = aimAt(a, now);
-      const v = reported != null && Math.abs(reported - server) <= 0.35 ? reported : server;
-      a.aim = clamp(v, -1, 1);
-      a.stage = 'power';
-      a.stageAt = now;
-      return;
-    }
-
-    const server = powerAt(a, now);
-    const v = reported != null && Math.abs(reported - server) <= 0.3 ? reported : server;
-    const power = clamp(v, 0, 1);
+    if (!a || a.done || now < state.startsAt) return;
+    if (!input) return;
+    if (now - a.lastShotAt < MIN_SHOT_INTERVAL_MS) return;
+    a.lastShotAt = now;
 
     const wind = state.winds[a.shots.length] ?? { x: 0, y: 0 };
-    const { dx, dy } = landing(a.aim, power, wind);
+    const { dx, dy } = landing(input, wind);
     const score = ringScore(Math.hypot(dx, dy));
 
     a.shots.push({
@@ -135,22 +129,16 @@ export default {
     });
     a.score += score;
     a.best = Math.max(a.best, score);
-
-    if (a.shots.length >= ARROWS_PER_ATHLETE) {
-      a.stage = 'done';
-    } else {
-      a.stage = 'aim';
-      a.stageAt = now;
-    }
+    if (a.shots.length >= ARROWS_PER_ATHLETE) a.done = true;
   },
 
-  // Nothing moves between taps — the sweeps are pure functions of the clock, so
-  // there is no per-tick simulation to run.
+  // Nothing moves between arrows: an aim is held by the player's thumb, not by
+  // the clock, so there is no per-tick simulation to run.
   step() {},
 
   isFinished(state, now) {
     if (now >= state.endsAt) return true;
-    return Object.values(state.athletes).every((a) => a.stage === 'done');
+    return Object.values(state.athletes).every((a) => a.done);
   },
 
   /**
@@ -173,9 +161,7 @@ export default {
     for (const [id, at] of Object.entries(state.athletes)) {
       a[id] = {
         l: at.lane,
-        st: at.stage,
-        sa: at.stageAt,
-        am: at.aim,
+        d: at.done ? 1 : 0,
         sc: at.score,
         sh: at.shots.map((s) => [s.dx, s.dy, s.score]),
       };
@@ -183,17 +169,17 @@ export default {
     return { s: state.startsAt, e: state.endsAt, w: state.winds, a };
   },
 
-  /** Bot seats and stalled-player fill: aims into the wind, roughly. */
+  /** Bot seats and stalled-player fill: corrects for the wind, imperfectly. */
   botInput(state, botId, difficulty = 0.7, now = 0) {
     const a = state.athletes[botId];
-    if (!a || a.stage === 'done' || now < state.startsAt) return null;
-    if (now - a.lastTapAt < 700) return null;
+    if (!a || a.done || now < state.startsAt) return null;
+    // Measured from the gun as well as the last arrow, so a bot does not
+    // loose the instant the countdown ends.
+    if (now - Math.max(a.lastShotAt, state.startsAt) < 1_600) return null;
 
     const wind = state.winds[a.shots.length] ?? { x: 0, y: 0 };
-    const slop = (1 - difficulty) * 0.5;
-    if (a.stage === 'aim') {
-      return { t: 'aim', v: clamp(-wind.x * 0.85 + slop, -1, 1) };
-    }
-    return { t: 'power', v: clamp(POWER_IDEAL + slop * 0.5, 0, 1) };
+    const ideal = aimThatCancels(wind);
+    const slop = (1 - difficulty) * 0.3;
+    return { x: clamp(ideal.x + slop, -1, 1), y: clamp(ideal.y - slop, -1, 1) };
   },
 };

@@ -35,6 +35,12 @@ export const PHASE_DURATION_MS = {
 // duration is placed last for that event and the match moves on.
 export const EVENT_OVERTIME_MS = 5_000;
 
+// How long the last frame of a heat is held before the results replace it.
+// The finish — waving on the wall, standing it out past the line — is the
+// payoff for the whole event, and it happens at the exact moment the last
+// athlete lands. Cut on that tick and nobody ever sees it.
+export const CELEBRATION_MS = 2_600;
+
 export const NAME_MAX_LENGTH = 16;
 export const CHAT_MAX_LENGTH = 60;
 

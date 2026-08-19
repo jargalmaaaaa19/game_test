@@ -2,6 +2,7 @@ import { randomInt } from 'node:crypto';
 import {
   ERROR,
   EVENTS_PER_MATCH,
+  CELEBRATION_MS,
   EVENT_OVERTIME_MS,
   PHASE,
   PHASE_DURATION_MS,
@@ -190,6 +191,7 @@ async function beginPlay(io, room) {
   if (room.phase !== PHASE.PLAY || room.programme[room.eventIndex] !== eventId) return;
 
   room.eventSim = sim;
+  room.heatOver = false;
 
   // Only what the renderer needs goes on the wire — see the event's `snapshot`.
   // `t` is the server clock: phones skew by seconds, so every countdown and
@@ -205,7 +207,16 @@ async function beginPlay(io, room) {
       last = t;
       sim.step(room.eventState, dt, t);
       io.to(room.id).emit('game:snapshot', { i: room.eventIndex, t, s: wire() });
-      if (sim.isFinished(room.eventState, t)) finishEvent(io, room, sim.placements(room.eventState), 'finished');
+      // Hold on the finish before cutting to the results. The tick keeps
+      // running, so the athletes keep animating and the stragglers keep
+      // swimming in — this replaces the overtime backstop's timer, which is
+      // moot once the heat is known to be over.
+      if (!room.heatOver && sim.isFinished(room.eventState, t)) {
+        room.heatOver = true;
+        schedule(room, CELEBRATION_MS, () => {
+          finishEvent(io, room, sim.placements(room.eventState), 'finished');
+        });
+      }
     }, TICK_MS);
     room.tickHandle.unref?.();
   }

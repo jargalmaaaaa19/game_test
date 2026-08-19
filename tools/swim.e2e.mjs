@@ -5,7 +5,7 @@
 //   node tools/swim.e2e.mjs
 
 import { io } from 'socket.io-client';
-import { WINDOW, beatTime, sideOf } from '../shared/events/freestyle_swim.js';
+import { TIER, beatTime, sideOf } from '../shared/events/freestyle_swim.js';
 
 const URL = process.env.SMOKE_URL || 'http://localhost:3200';
 
@@ -95,7 +95,7 @@ const run = async () => {
   const clock = () => Date.now() + offset;
 
   autoSwimmer(host, room.playerId, { offset: 0 }, play, clock);
-  autoSwimmer(guest, j1.playerId, { offset: WINDOW.perfect + 30 }, play, clock); // reliably "good", never perfect
+  autoSwimmer(guest, j1.playerId, { offset: TIER.perfect + 30 }, play, clock); // reliably "good", never perfect
   // `idle` never strokes.
 
   let last = null;

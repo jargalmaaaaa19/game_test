@@ -22,6 +22,13 @@ export const PROPORTIONS = {
 // they can never drift apart when one outfit changes shape.
 const BODY = { height: 0.78, centerY: 0.72, top: 1.11, bottom: 0.33 };
 
+// Where a leg swings from, where the head turns on, and where the arms hang in
+// the neutral pose the portraits use. An animator eases back to these rather
+// than to zero, or a character that stops moving snaps into a T-pose.
+const HIP_Y = 0.5;
+const NECK_Y = 1.05; // the base of the skull, just above the collar
+export const REST = { hipY: HIP_Y, neckY: NECK_Y, shoulderX: 0.92 };
+
 // The camera sits on -Z, so "front" is negative Z. Every feature is placed
 // against this constant rather than a hardcoded sign.
 const FRONT = -1;
@@ -84,16 +91,43 @@ export function buildChibi(B, scene, look) {
     return mesh;
   };
 
+  // The rig. Every joint starts untransformed, so the character below renders
+  // exactly as it always has whether or not anything drives it — a portrait is
+  // byte-identical. The joints that carry a position (hip, neck) carry it
+  // because the limb has to PIVOT there: rotate a leg about the character's
+  // feet or a head about its navel and you get a puppet, not a runner. Their
+  // children are written relative to the joint; everything else keeps the
+  // absolute coordinates the proportions at the top of this file are in.
+  const upper = new B.TransformNode('upper', scene);
+  upper.parent = root;
+  const neck = new B.TransformNode('neck', scene);
+  neck.parent = upper;
+  neck.position.y = NECK_Y;
+
+  /** `add`, but hung off a joint instead of the root. */
+  const under = (parent) => (mesh, material, opts = {}) => add(mesh, material, { parent, ...opts });
+
+  /** `add`, hung off the neck and rebased onto it, so callers keep writing absolute Y. */
+  const atNeck = (mesh, material, opts = {}) => add(mesh, material, {
+    ...opts,
+    parent: neck,
+    pos: opts.pos ? [opts.pos[0], opts.pos[1] - NECK_Y, opts.pos[2]] : undefined,
+  });
+
   // A broad build widens the shoulders, straightens the taper, lifts the hem
   // and shows more leg — the same outfit cut for a different frame. Without it
   // every character is the same rounded tube and menswear reads as a tunic.
   const broad = (look.build ?? DEFAULT_BUILD) === 'b_broad';
 
-  const legs = buildOutfit(B, scene, add, mats, outfitStyle, broad);
-  buildLegsAndShoes(B, scene, add, mats, legs, broad);
-  buildArms(B, scene, root, mats, outfitStyle, broad);
-  buildHead(B, scene, add, mats, broad, hairStyle.color);
-  buildHair(B, scene, add, mats, hairStyle, broad);
+  const legs = buildOutfit(B, scene, under(upper), mats, outfitStyle, broad);
+  const hips = buildLegsAndShoes(B, scene, add, mats, legs, broad, root);
+  const shoulders = buildArms(B, scene, upper, mats, outfitStyle, broad);
+  buildHead(B, scene, atNeck, mats, broad, hairStyle.color);
+  buildHair(B, scene, atNeck, mats, hairStyle, broad);
+
+  // Handed over on the node rather than in the return value: `buildChibi`'s
+  // contract is "one disposable root", and half a dozen callers rely on it.
+  root.metadata = { ...(root.metadata ?? {}), rig: { upper, neck, hips, shoulders } };
 
   return root;
 }
@@ -263,7 +297,7 @@ function buildOutfit(B, scene, add, mats, outfit, broad) {
 
 // ---------------------------------------------------------------------------
 
-function buildLegsAndShoes(B, scene, add, mats, legs, broad) {
+function buildLegsAndShoes(B, scene, add, mats, legs, broad, root) {
   const legMat = mats[legs.color] ?? mats.skin;
   // Trousers reach the shoe; bare legs are a short band under the hem. Either
   // way the leg is stubby — any more and the silhouette stops being a toy. A
@@ -271,21 +305,36 @@ function buildLegsAndShoes(B, scene, add, mats, legs, broad) {
   const height = legs.long ? 0.44 : 0.32;
   const centerY = legs.long ? 0.3 : 0.26;
   const radius = broad ? 0.15 : 0.135;
+  const hips = {};
 
   for (const side of [-1, 1]) {
+    // The hip joint, at the top of the leg. Leg and shoe are positioned
+    // relative to it, so rotating it swings the whole limb from the hip —
+    // rotate the leg mesh instead and it pivots about its own middle, which
+    // reads as a leg snapping in half.
+    const hip = new B.TransformNode(`hip${side}`, scene);
+    hip.parent = root;
+    hip.position.set(side * (broad ? 0.17 : 0.16), HIP_Y, 0);
+    hips[side] = hip;
+
     add(B.MeshBuilder.CreateCapsule(`leg${side}`, { height, radius }, scene), legMat, {
-      pos: [side * (broad ? 0.17 : 0.16), centerY, 0],
+      parent: hip,
+      pos: [0, centerY - HIP_Y, 0],
     });
     // White trainers: the UI behind these characters is near-black, and a dark
     // shoe on a dark card amputates the feet.
     add(B.MeshBuilder.CreateSphere(`shoe${side}`, { diameter: broad ? 0.38 : 0.35, segments: 14 }, scene), mats.shoe, {
-      pos: [side * (broad ? 0.17 : 0.16), 0.1, FRONT * 0.06],
+      parent: hip,
+      pos: [0, 0.1 - HIP_Y, FRONT * 0.06],
       scale: [1, 0.58, 1.45],
     });
   }
+
+  return hips;
 }
 
 function buildArms(B, scene, root, mats, outfit, broad) {
+  const shoulders = {};
   // Sleeveless kits leave the shoulder bare; a blazer or hoodie has a sleeve
   // running most of the way down the arm.
   const sleeved = ['hoodie', 'blazer', 'overalls', 'track'].includes(outfit.kind);
@@ -293,6 +342,7 @@ function buildArms(B, scene, root, mats, outfit, broad) {
   for (const side of [-1, 1]) {
     const shoulder = new B.TransformNode(`shoulder${side}`, scene);
     shoulder.parent = root;
+    shoulders[side] = shoulder;
     // Set out further on a broad build so the arms hang off the wider shoulder
     // line instead of disappearing into it.
     shoulder.position.set(side * (broad ? 0.38 : 0.31), broad ? 1.0 : 0.99, 0);
@@ -326,6 +376,8 @@ function buildArms(B, scene, root, mats, outfit, broad) {
     hand.parent = shoulder;
     hand.position.set(0, -0.4, 0);
   }
+
+  return shoulders;
 }
 
 function buildHead(B, scene, add, mats, broad, hairColor) {

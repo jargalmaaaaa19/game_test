@@ -7,8 +7,9 @@ import swim, {
   COUNTDOWN_MS,
   DISTANCE_M,
   LEAD_IN_MS,
+  REACT_MS,
+  TIER,
   TOTAL_BEATS,
-  WINDOW,
   beatTime,
   judge,
   sideOf,
@@ -39,6 +40,9 @@ const fresh = (rng = () => 0.5) => swim.initState(seats, rng, T0);
  * swimmer presses; `wrongEvery` makes them catch the wrong side periodically.
  */
 function race(state, id, { offset = 0, wrongEvery = 0, silent = false } = {}) {
+  // `offset` is now REACTION TIME: how long after the cue lands this swimmer
+  // answers it. Zero is a superhuman reflex, and deliberately allowed here so
+  // the ceiling is testable.
   const tick = 50;
   let strokes = 0;
   for (let now = state.startsAt; now <= state.endsAt; now += tick) {
@@ -66,22 +70,50 @@ test('the beat grid is evenly spaced after the lead-in', () => {
   assert.equal(beatTime(state.startsAt, 3) - beatTime(state.startsAt, 2), BEAT_MS);
 });
 
-test('judgement windows widen from perfect to ok, then stop', () => {
+test('reaction tiers run fast to slow, then the cue expires', () => {
   const state = fresh();
   const at = beatTime(state.startsAt, 0);
   assert.equal(judge(state.startsAt, 0, at), 'perfect');
-  assert.equal(judge(state.startsAt, 0, at + WINDOW.perfect + 5), 'good');
-  assert.equal(judge(state.startsAt, 0, at + WINDOW.good + 5), 'ok');
-  assert.equal(judge(state.startsAt, 0, at + WINDOW.ok + 5), null);
+  assert.equal(judge(state.startsAt, 0, at + TIER.perfect + 5), 'good');
+  assert.equal(judge(state.startsAt, 0, at + TIER.good + 5), 'ok');
+  assert.equal(judge(state.startsAt, 0, at + REACT_MS + 5), null);
 });
 
-test('the stroke pattern mostly alternates but is not a drum roll', () => {
-  const state = fresh(() => 0.9); // always flips
-  const alternating = state.sides.every((s, i) => i === 0 || s !== state.sides[i - 1]);
-  assert.equal(alternating, true);
+test('a press BEFORE the cue lands scores nothing — it cannot be a reaction', () => {
+  const state = fresh();
+  const at = beatTime(state.startsAt, 0);
+  assert.equal(judge(state.startsAt, 0, at - 1), null);
+  assert.equal(judge(state.startsAt, 0, at - 200), null);
+});
 
-  const sticky = fresh(() => 0.1); // never flips
-  assert.equal(sticky.sides.every((s) => s === sticky.sides[0]), true);
+test('the stroke pattern is mixed, not taking turns', () => {
+  // A coin that always says "heads" still may not produce a run past three.
+  const sticky = fresh(() => 0.1);
+  let run = 1;
+  let longest = 1;
+  for (let i = 1; i < sticky.sides.length; i += 1) {
+    run = sticky.sides[i] === sticky.sides[i - 1] ? run + 1 : 1;
+    longest = Math.max(longest, run);
+  }
+  assert.ok(longest <= 3, `a run of ${longest} of the same side`);
+
+  // And the sides are NOT a strict alternation any more: turn-taking is what
+  // the mixing replaced, so a sequence that alternates perfectly would mean
+  // the draw is being ignored.
+  const mixed = fresh(() => 0.1);
+  const alternating = mixed.sides.every((s, i) => i === 0 || s !== mixed.sides[i - 1]);
+  assert.equal(alternating, false);
+});
+
+test('answering faster moves you faster', () => {
+  const quick = race(fresh(), 'ace', { offset: 40 });
+  const dawdling = race(fresh(), 'ace', { offset: REACT_MS - 40 });
+  assert.ok(quick.time < dawdling.time, `quick ${quick.time} vs slow ${dawdling.time}`);
+});
+
+test('even the slowest correct answer still finishes inside the round', () => {
+  const slow = race(fresh(), 'ace', { offset: REACT_MS - 20 });
+  assert.equal(slow.done, true, `only reached ${slow.x}m`);
 });
 
 test('a swimmer on the beat finishes the 50m', () => {
@@ -95,14 +127,8 @@ test('the finishing time is in a plausible range', () => {
   assert.ok(time > 18_000 && time < 34_000, `implausible time: ${time}ms`);
 });
 
-test('perfect timing beats sloppy timing', () => {
-  const perfect = race(fresh(), 'ace');
-  const sloppy = race(fresh(), 'ace', { offset: WINDOW.good + 20 });
-  assert.ok(perfect.time < sloppy.time, `${perfect.time} vs ${sloppy.time}`);
-});
-
-test('catching the wrong side costs more than a late stroke', () => {
-  const late = race(fresh(), 'ace', { offset: WINDOW.perfect + 10 });
+test('catching the wrong side costs more than a slow stroke', () => {
+  const late = race(fresh(), 'ace', { offset: TIER.perfect + 10 });
   const wrong = race(fresh(), 'ace', { wrongEvery: 3 });
   assert.ok(wrong.x <= late.x || wrong.time > late.time, `wrong ${wrong.time} vs late ${late.time}`);
 });
@@ -154,7 +180,7 @@ test('a garbage payload cannot move a swimmer or crash', () => {
 test('placements are finishers by time, then the rest by distance', () => {
   const state = fresh();
   race(state, 'ace');
-  race(state, 'sloppy', { offset: WINDOW.good + 30 });
+  race(state, 'sloppy', { offset: TIER.good + 30 });
   const order = swim.placements(state);
   assert.equal(order[0], 'ace', JSON.stringify(order));
   assert.equal(order[2], 'idle');
