@@ -35,15 +35,102 @@ const FRONT = -1;
 
 const hexToColor3 = (B, hex) => B.Color3.FromHexString(hex);
 
-/** Matte, low-spec material — the soft toy look, not plastic. */
-function matte(B, scene, hex, { alpha = 1, emissive = 0 } = {}) {
-  const mat = new B.StandardMaterial(`m_${hex}_${alpha}_${emissive}`, scene);
-  mat.diffuseColor = hexToColor3(B, hex);
-  mat.specularColor = new B.Color3(0.06, 0.06, 0.06);
-  mat.specularPower = 8;
-  if (emissive) mat.emissiveColor = hexToColor3(B, hex).scale(emissive);
-  if (alpha < 1) mat.alpha = alpha;
+/**
+ * The lighting environment, drawn on the device.
+ *
+ * PBR without an environment is a face lit by nothing but its key light: the
+ * shadowed side goes to black and the whole character reads as cut from paper.
+ * A real studio has walls, so this paints one — warm bounce above, cool bounce
+ * below, a soft key blob and a cooler rim blob — and hands it to Babylon as the
+ * scene environment. Half the "expensive render" look in a toy render is just
+ * this: something for the surfaces to reflect.
+ *
+ * Equirectangular from a canvas data URL, so it is generated here and fetched
+ * from nowhere — the platform strips external assets at deploy.
+ */
+function envDataUrl() {
+  const c = document.createElement('canvas');
+  c.width = 512;
+  c.height = 256;
+  const x = c.getContext('2d');
+
+  const sky = x.createLinearGradient(0, 0, 0, 256);
+  sky.addColorStop(0, '#fff6e9'); // warm ceiling bounce
+  sky.addColorStop(0.42, '#dfe6f0');
+  sky.addColorStop(0.58, '#93a0b4');
+  sky.addColorStop(1, '#3f4653'); // floor, cool and dim
+  x.fillStyle = sky;
+  x.fillRect(0, 0, 512, 256);
+
+  const blob = (cx, cy, r, color) => {
+    const g = x.createRadialGradient(cx, cy, 2, cx, cy, r);
+    g.addColorStop(0, color);
+    g.addColorStop(1, color.replace(/[\d.]+\)$/, '0)'));
+    x.fillStyle = g;
+    x.fillRect(0, 0, 512, 256);
+  };
+  blob(150, 66, 96, 'rgba(255, 246, 222, 1)'); // key
+  blob(392, 104, 116, 'rgba(176, 212, 255, 0.85)'); // rim
+  blob(300, 226, 90, 'rgba(255, 226, 190, 0.35)'); // warm floor bounce
+
+  return c.toDataURL('image/png');
+}
+
+/**
+ * Attach the environment to whatever scene this character is being built into —
+ * the portrait stage, the live preview, or an arena — once per scene. Arenas
+ * get it too: the same surfaces have to read the same way in the lobby and on
+ * the track, or the character a player chose is not the one that turns up.
+ */
+function ensureEnvironment(B, scene) {
+  if (scene.environmentTexture || scene._chibiEnvTried) return;
+  scene._chibiEnvTried = true;
+  try {
+    if (!B.EquiRectangularCubeTexture || typeof document === 'undefined') return;
+    scene.environmentTexture = new B.EquiRectangularCubeTexture(envDataUrl(), scene, 256);
+    scene.environmentIntensity = 0.55;
+  } catch {
+    // Lights-only fallback: dimmer, but it still draws a character.
+  }
+}
+
+/**
+ * One surface. PBR, because the whole difference between a toy render and a
+ * flat one is how light leaves the material — roughness, a sheen on cloth and
+ * hair, and a genuinely glossy eye.
+ *
+ * `roughness` is the only dial worth thinking about here: skin is soft, cloth
+ * is softer, hair has a sheen, and an eye is wet.
+ */
+function surface(B, scene, hex, { roughness = 0.8, alpha = 1, emissive = 0, sheen = 0 } = {}) {
+  const mat = new B.PBRMaterial(`m_${hex}_${roughness}_${alpha}_${emissive}_${sheen}`, scene);
+  // sRGB in, LINEAR out. The catalog hexes are sRGB — the colours a designer
+  // picked — and a PBR albedo is linear. Handing the hex straight over washes
+  // every character out: honey skin renders as chalk and brown hair as grey,
+  // which reads as "the lighting is wrong" and is not.
+  mat.albedoColor = hexToColor3(B, hex).toLinearSpace();
+  mat.metallic = 0;
+  mat.roughness = roughness;
+  // The chibi has no normal maps and hard-edged scaling; specular AA is what
+  // stops the rim light crawling along those edges as the athlete turns.
+  mat.enableSpecularAntiAliasing = true;
+  mat.environmentIntensity = 1;
+  if (emissive) mat.emissiveColor = hexToColor3(B, hex).toLinearSpace().scale(emissive);
+  if (alpha < 1) {
+    mat.alpha = alpha;
+    mat.transparencyMode = B.PBRMaterial.PBRMATERIAL_ALPHABLEND;
+  }
+  if (sheen) {
+    mat.sheen.isEnabled = true;
+    mat.sheen.intensity = sheen;
+    mat.sheen.roughness = 0.5;
+  }
   return mat;
+}
+
+/** Kept for the parts that genuinely want no shading model at all. */
+function matte(B, scene, hex, opts = {}) {
+  return surface(B, scene, hex, { roughness: 0.85, ...opts });
 }
 
 const shade = (B, hex, amount = 0.72) => {
@@ -69,22 +156,37 @@ export function buildChibi(B, scene, look) {
   const hairStyle = getHair(look.hair ?? look.face); // `face` is the pre-rename id
   const outfitStyle = getOutfit(look.outfit);
 
+  ensureEnvironment(B, scene);
+
   const mats = {
-    skin: matte(B, scene, skinTone.hex),
-    hair: matte(B, scene, hairStyle.color),
-    primary: matte(B, scene, outfitStyle.primary),
-    secondary: matte(B, scene, outfitStyle.secondary),
-    primaryDark: matte(B, scene, shade(B, outfitStyle.primary, 0.7)),
-    ink: matte(B, scene, '#241f1e'),
-    white: matte(B, scene, '#ffffff', { emissive: 0.35 }),
-    shoe: matte(B, scene, '#eceff3'),
-    blush: matte(B, scene, '#f2758a', { alpha: 0.62 }),
-    mouth: matte(B, scene, '#7a2530'),
+    // Skin is soft but not chalk: a little sheen is what stops a cheek reading
+    // as felt.
+    skin: surface(B, scene, skinTone.hex, { roughness: 0.6, sheen: 0.05 }),
+    hair: surface(B, scene, hairStyle.color, { roughness: 0.52, sheen: 0.14 }),
+    primary: surface(B, scene, outfitStyle.primary, { roughness: 0.82, sheen: 0.06 }),
+    secondary: surface(B, scene, outfitStyle.secondary, { roughness: 0.82, sheen: 0.06 }),
+    primaryDark: surface(B, scene, shade(B, outfitStyle.primary, 0.7), { roughness: 0.86 }),
+    // The eyes carry the whole face. Wet, not black: a near-black brown at
+    // roughness 0.05 catches the key and the rim as two separate highlights,
+    // which is the difference between an eye and a hole.
+    ink: surface(B, scene, '#20191c', { roughness: 0.05 }),
+    white: surface(B, scene, '#ffffff', { roughness: 0.12, emissive: 0.3 }),
+    shoe: surface(B, scene, '#e4e8ee', { roughness: 0.45 }),
+    blush: surface(B, scene, '#f2758a', { alpha: 0.3, roughness: 0.8 }),
+    mouth: surface(B, scene, '#8c3038', { roughness: 0.42 }),
   };
+
+  const shadows = scene.metadata?.chibiShadows ?? null;
 
   const add = (mesh, material, { pos, scale, rot, parent } = {}) => {
     mesh.material = material;
     mesh.parent = parent ?? root;
+    // Self-shadowing is most of the remaining depth: the chin onto the neck,
+    // the arms onto the torso, the hair onto the forehead.
+    if (shadows) {
+      shadows.addShadowCaster(mesh);
+      mesh.receiveShadows = true;
+    }
     if (pos) mesh.position.set(pos[0], pos[1], pos[2]);
     if (scale) mesh.scaling.set(scale[0], scale[1], scale[2]);
     if (rot) mesh.rotation.set(rot[0], rot[1], rot[2]);
@@ -406,13 +508,21 @@ function buildHead(B, scene, add, mats, broad, hairColor) {
   for (const side of [-1, 1]) {
     // Big and well separated: on a 40px lobby card the eyes ARE the character.
     // A broad build narrows them slightly — round and tall reads young/soft.
-    add(B.MeshBuilder.CreateSphere(`eye${side}`, { diameter: 0.23, segments: 16 }, scene), mats.ink, {
-      pos: [side * 0.22, eyeY, faceZ],
-      scale: broad ? [0.8, 0.86, 0.4] : [0.82, 1.05, 0.4],
+    // Bigger than looks sensible in a wireframe, because a chibi face IS its
+    // eyes — and the glossier they are the more alive they read. Two highlights
+    // rather than one: a big soft catchlight from the key, and a small hard one
+    // from the rim. One highlight is a shiny bead; two is an eye.
+    add(B.MeshBuilder.CreateSphere(`eye${side}`, { diameter: 0.28, segments: 20 }, scene), mats.ink, {
+      pos: [side * 0.225, eyeY, faceZ],
+      scale: broad ? [0.82, 0.92, 0.38] : [0.86, 1.12, 0.4],
     });
-    add(B.MeshBuilder.CreateSphere(`glint${side}`, { diameter: 0.085, segments: 10 }, scene), mats.white, {
-      pos: [side * 0.255, eyeY + 0.045, faceZ - 0.02],
-      scale: [1, 1, 0.35],
+    add(B.MeshBuilder.CreateSphere(`glint${side}`, { diameter: 0.105, segments: 12 }, scene), mats.white, {
+      pos: [side * 0.265, eyeY + 0.055, faceZ - 0.035],
+      scale: [1, 1, 0.3],
+    });
+    add(B.MeshBuilder.CreateSphere(`glintB${side}`, { diameter: 0.05, segments: 10 }, scene), mats.white, {
+      pos: [side * 0.185, eyeY - 0.055, faceZ - 0.03],
+      scale: [1, 1, 0.3],
     });
 
     // Brows in the hair colour. Thick, low and level for broad; thin, high and
@@ -434,16 +544,16 @@ function buildHead(B, scene, add, mats, broad, hairColor) {
     // Blush — the single biggest "cute" lever, and it costs two spheres. A
     // broad build gets none: rosy cheeks undo everything above.
     if (!broad) {
-      add(B.MeshBuilder.CreateSphere(`blush${side}`, { diameter: 0.2, segments: 10 }, scene), mats.blush, {
-        pos: [side * 0.37, headY - 0.11, FRONT * 0.43],
-        scale: [1.15, 0.7, 0.3],
+      add(B.MeshBuilder.CreateSphere(`blush${side}`, { diameter: 0.2, segments: 12 }, scene), mats.blush, {
+        pos: [side * 0.375, headY - 0.12, FRONT * 0.43],
+        scale: [1.05, 0.58, 0.28],
       });
     }
   }
 
-  add(B.MeshBuilder.CreateSphere('mouth', { diameter: 0.2, segments: 12 }, scene), mats.mouth, {
-    pos: [0, headY - (broad ? 0.22 : 0.2), faceZ + FRONT * 0.01],
-    scale: broad ? [1.0, 0.42, 0.3] : [1.15, 0.8, 0.32],
+  add(B.MeshBuilder.CreateSphere('mouth', { diameter: 0.2, segments: 14 }, scene), mats.mouth, {
+    pos: [0, headY - (broad ? 0.23 : 0.21), faceZ + FRONT * 0.01],
+    scale: broad ? [0.62, 0.26, 0.26] : [0.7, 0.4, 0.28],
   });
 }
 
@@ -570,12 +680,86 @@ export function setupStage(B, scene, canvas, { interactive = false } = {}) {
     camera.panningSensibility = 0; // dragging must orbit, never pan the athlete off-screen
   }
 
+  // A three-point rig, which is the other half of the toy-render look. One
+  // light gives you a lit side and a black side; three gives you a form.
   const fill = new B.HemisphericLight('fill', new B.Vector3(0.1, 1, -0.2), scene);
-  fill.intensity = 0.92;
-  fill.groundColor = new B.Color3(0.42, 0.4, 0.46);
+  fill.intensity = 0.32;
+  fill.diffuse = new B.Color3(0.86, 0.9, 1);
+  fill.groundColor = new B.Color3(0.3, 0.28, 0.34);
 
-  const key = new B.DirectionalLight('key', new B.Vector3(0.45, -0.7, 0.6), scene);
-  key.intensity = 0.85;
+  const key = new B.DirectionalLight('key', new B.Vector3(0.45, -0.78, 0.55), scene);
+  key.intensity = 1.45;
+  key.diffuse = new B.Color3(1, 0.96, 0.9); // warm
+  key.position = new B.Vector3(-3, 5, -4);
+
+  // The rim is what lifts a dark character off a dark card. Cool, behind, and
+  // never strong enough to read as a second key.
+  const rim = new B.DirectionalLight('rim', new B.Vector3(-0.6, -0.15, -0.85), scene);
+  rim.intensity = 0.7;
+  rim.diffuse = new B.Color3(0.68, 0.82, 1);
+
+  // Soft self-shadowing. The character registers itself as a caster in
+  // `buildChibi` when it finds this on the scene.
+  let shadows = null;
+  try {
+    shadows = new B.ShadowGenerator(512, key);
+    shadows.useBlurCloseExponentialShadowMap = true;
+    shadows.blurKernel = 24;
+    shadows.depthScale = 40;
+    shadows.darkness = 0.42;
+    scene.metadata = { ...(scene.metadata ?? {}), chibiShadows: shadows };
+  } catch {
+    // No shadow map is a softer picture, not a broken one.
+  }
+
+  // The contact shadow: a painted ellipse on the floor. A real shadow-catching
+  // ground would need a plane behind the character, and this stage renders on
+  // transparent so the card shows through — so the one shadow that matters for
+  // "standing on something" is drawn rather than cast.
+  try {
+    const tex = new B.DynamicTexture('contact', { width: 128, height: 128 }, scene, true);
+    const cx = tex.getContext();
+    const g = cx.createRadialGradient(64, 64, 2, 64, 64, 62);
+    g.addColorStop(0, 'rgba(0,0,0,0.55)');
+    g.addColorStop(0.55, 'rgba(0,0,0,0.28)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    cx.fillStyle = g;
+    cx.fillRect(0, 0, 128, 128);
+    tex.update();
+    tex.hasAlpha = true;
+
+    const mat = new B.StandardMaterial('contactMat', scene);
+    mat.diffuseTexture = tex;
+    mat.opacityTexture = tex;
+    mat.disableLighting = true;
+    mat.emissiveColor = new B.Color3(0, 0, 0);
+
+    const disc = B.MeshBuilder.CreateGround('contact', { width: 1.9, height: 1.5 }, scene);
+    disc.material = mat;
+    disc.position.y = 0.002;
+    disc.isPickable = false;
+  } catch {
+    /* the floor is optional */
+  }
+
+  // Tone mapping, a little bloom, and antialiasing. This is what turns correct
+  // lighting into a photographed object.
+  try {
+    const pipeline = new B.DefaultRenderingPipeline('chibiPipeline', true, scene, [camera]);
+    pipeline.samples = 4;
+    pipeline.fxaaEnabled = true;
+    pipeline.imageProcessing.toneMappingEnabled = true;
+    pipeline.imageProcessing.toneMappingType = B.ImageProcessingConfiguration.TONEMAPPING_ACES;
+    pipeline.imageProcessing.exposure = 1;
+    pipeline.imageProcessing.contrast = 1.12;
+    pipeline.bloomEnabled = true;
+    pipeline.bloomThreshold = 0.98;
+    pipeline.bloomWeight = 0.09;
+    pipeline.bloomKernel = 32;
+    pipeline.bloomScale = 0.5;
+  } catch {
+    // An older runtime without the pipeline still renders, just flatter.
+  }
 
   return camera;
 }
