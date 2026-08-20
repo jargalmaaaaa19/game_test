@@ -40,7 +40,7 @@ export const HAIRSTYLES = [
   { id: 'h_ponytail', label: 'Ponytail', kind: 'ponytail', color: '#1f1a18' },
   { id: 'h_short', label: 'Short', kind: 'short', color: '#2e2624' },
   { id: 'h_buzz', label: 'Buzz cut', kind: 'buzz', color: '#241f1d' },
-  { id: 'h_beard', label: 'Beard', kind: 'beard', color: '#3b2b20' },
+  { id: 'h_quiff', label: 'Quiff', kind: 'quiff', color: '#3b2b20' },
 ];
 
 /** `kind` drives real geometry — a dress flares, a hoodie has a hood. */
@@ -96,7 +96,7 @@ export const CHARACTERS = [
   { id: 'ch_4', hair: 'h_bob', outfit: 'o_overalls', build: 'b_soft', skin: 'sk_2' },
   { id: 'ch_5', hair: 'h_short', outfit: 'o_jeans', build: 'b_broad', skin: 'sk_3' },
   { id: 'ch_6', hair: 'h_buzz', outfit: 'o_track', build: 'b_broad', skin: 'sk_4' },
-  { id: 'ch_7', hair: 'h_beard', outfit: 'o_hoodie', build: 'b_broad', skin: 'sk_6' },
+  { id: 'ch_7', hair: 'h_quiff', outfit: 'o_hoodie', build: 'b_broad', skin: 'sk_6' },
   { id: 'ch_8', hair: 'h_ponytail', outfit: 'o_blazer', build: 'b_broad', skin: 'sk_2' },
 ];
 

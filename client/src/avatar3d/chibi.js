@@ -752,12 +752,24 @@ function buildHair(B, scene, add, mats, style, broad) {
       cap(-0.01, 0.28);
       break;
 
-    case 'beard':
-    default:
+    case 'quiff':
+      // Clean-shaven, so the whole face is the painted one — which is the point
+      // of painting it. The beard that used to be here covered the mouth and
+      // most of the jaw, and against a simple two-tone toy it read as a dark
+      // smudge rather than as hair.
+      //
+      // Losing it costs a silhouette, so this cut earns one back: the volume is
+      // lifted above and forward of the hairline. At card size a raised front is
+      // the only hair cue that survives, which is why `short` and `buzz` are
+      // told apart by height rather than by texture.
       cap(0.07, 0.34);
-      // Wide enough to wrap the (broader) jaw block underneath it — a beard
-      // tucked inside the jaw is a beard nobody can see.
-      blob('beard', broad ? 0.95 : 0.78, [0, headY - 0.26, FRONT * 0.12], [1.04, 0.66, 0.96]);
+      blob('quiff', 0.44, [0, headY + 0.46, FRONT * 0.2], [1.3, 0.9, 0.92]);
+      break;
+
+    default:
+      // A plain cap. An id this file does not know about should render a
+      // haircut, not the last case that happened to be written.
+      cap(0.07, 0.34);
       break;
   }
 }
