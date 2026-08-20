@@ -64,6 +64,33 @@ export function registerHandlers(io, store) {
 
     const currentRoom = () => (socket.data.roomId ? store.getById(socket.data.roomId) : null);
 
+    /**
+     * Put the athlete the player BUILT into the seat they just took.
+     *
+     * Identity used to be pushed by a separate effect once the lobby was on
+     * screen, which a solo launch never reaches — it goes straight from the
+     * feed into a race — so the character, tone and flag a player had chosen
+     * were dropped on the floor and they raced as the default. Applying it at
+     * seat time closes that hole for every door, and closes the 250ms debounce
+     * window in the hall as well.
+     *
+     * A look that fails validation is not worth refusing a seat over: the
+     * player still gets in, wearing the defaults.
+     */
+    const dressSeat = (room, player, payload, now) => {
+      const validation = validateIdentity({
+        character: payload.character,
+        skin: payload.skin,
+        country: payload.country,
+      });
+      if (!validation.ok) return;
+      const patch = validation.patch;
+      // Somebody already has that flag — keep the rest of the look rather than
+      // dropping the whole thing.
+      if (patch.country && isCountryTaken(room, patch.country, player.id)) delete patch.country;
+      if (Object.keys(patch).length > 0) room.setIdentity(player.id, patch, now);
+    };
+
     const seat = (room, player) => {
       socket.join(room.id);
       socket.data.roomId = room.id;
@@ -89,6 +116,7 @@ export function registerHandlers(io, store) {
         now,
       });
       seat(room, player);
+      dressSeat(room, player, payload, now);
 
       log.info('room.joined', { roomId: room.id, code: room.code, playerId: player.id, host: true });
       respond(cb, { ok: true, code: room.code, roomId: room.id, playerId: player.id, state: room.snapshot() });
@@ -122,6 +150,7 @@ export function registerHandlers(io, store) {
         now,
       });
       seat(room, player);
+      dressSeat(room, player, payload, now);
       room.setReady(player.id, true, now);
 
       // One human plus a field. Clamped to what the room can hold, and to at
@@ -188,6 +217,7 @@ export function registerHandlers(io, store) {
         now,
       });
       seat(room, player);
+      dressSeat(room, player, payload, now);
 
       log.info('room.joined', { roomId: room.id, code: room.code, playerId: player.id, host: false });
       respond(cb, { ok: true, code: room.code, roomId: room.id, playerId: player.id, state: room.snapshot() });

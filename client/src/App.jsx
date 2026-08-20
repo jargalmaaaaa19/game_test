@@ -108,8 +108,24 @@ export default function App({ hostConfig }) {
     }
   }, []);
 
-  const handleCreate = () => guard(() => createRoom({ name: look.name || undefined }));
-  const handleSolo = () => guard(() => soloMatch({ name: look.name || undefined }));
+  // The whole look, not just the name: the server dresses the seat as it hands
+  // it out, so the athlete a player built is the one that races even when the
+  // launch never passes through a lobby.
+  const seatLook = () => ({
+    name: look.name || undefined,
+    character: look.character,
+    skin: look.skin,
+    country: look.country,
+  });
+
+  // Read through a ref by the invite and solo doors: both fire from effects
+  // whose dependency lists must not re-arm on every keystroke in the name
+  // field, and both need the look as it stands the moment they run.
+  const seatLookRef = useRef(seatLook);
+  seatLookRef.current = seatLook;
+
+  const handleCreate = () => guard(() => createRoom(seatLook()));
+  const handleSolo = () => guard(() => soloMatch(seatLook()));
 
   // --- arriving from an invite ---------------------------------------------
   // The invited player never sees a code. The platform hands us the room, and
@@ -130,7 +146,7 @@ export default function App({ hostConfig }) {
       if (!roomId || joinedRef.current === roomId) return;
       joinedRef.current = roomId; // once per room, or a re-render re-joins
       setInvitePending(true);
-      guard(() => joinRoom({ code: roomId, name: look.name || undefined })).finally(() =>
+      guard(() => joinRoom({ code: roomId, ...seatLookRef.current() })).finally(() =>
         setInvitePending(false),
       );
     },
@@ -157,7 +173,7 @@ export default function App({ hostConfig }) {
     if (connection !== 'connected' || room || soloRef.current) return;
     if (invitedRoomId() || !launchedSolo(hostConfig)) return;
     soloRef.current = true;
-    guard(() => soloMatch({ name: look.name || undefined }));
+    guard(() => soloMatch(seatLookRef.current()));
     // `look.name` is read at call time, as with the invite: adding it here
     // would re-arm the effect on every keystroke in the name field.
     // eslint-disable-next-line react-hooks/exhaustive-deps

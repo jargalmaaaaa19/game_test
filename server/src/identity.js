@@ -1,7 +1,7 @@
 import { ERROR, NAME_MAX_LENGTH } from '../../shared/constants.js';
 import {
-  DEFAULT_CHARACTER,
-  DEFAULT_SKIN,
+  CHARACTERS,
+  SKIN_TONES,
   characterDesign,
   isCharacter,
   isSkin,
@@ -102,18 +102,33 @@ const FALLBACK_COUNTRIES = [
   DEFAULT_COUNTRY, 'JP', 'KR', 'US', 'BR', 'DE', 'FR', 'IT', 'KZ', 'CA', 'AU', 'MX',
 ];
 
-/** A look for a player who has not opened the picker yet (solo launch, bots). */
+/**
+ * A look for a player who has not opened the picker yet (solo launch, bots).
+ *
+ * Everyone used to get DEFAULT_CHARACTER in DEFAULT_SKIN, which meant a field
+ * of bots was four copies of one athlete wearing four different flags — on a
+ * track, at a distance, indistinguishable. The seat index walks the catalogue
+ * instead, so a race has a field in it. A human who opens the picker overwrites
+ * all of this anyway.
+ */
 export function defaultIdentity(room, name) {
   const taken = new Set([...room.players.values()].map((p) => p.country));
   const country = config.uniqueFlags
     ? FALLBACK_COUNTRIES.find((c) => !taken.has(c)) || DEFAULT_COUNTRY
     : DEFAULT_COUNTRY;
 
+  // Where in the room this seat lands. Deliberately the seat COUNT rather than
+  // a random draw: the same room always dresses its athletes the same way, so
+  // a reconnect and a replay agree with what everyone already saw.
+  const seat = room.players.size;
+  const character = CHARACTERS[seat % CHARACTERS.length].id;
+  const skin = SKIN_TONES[(seat * 3) % SKIN_TONES.length].id;
+
   return {
     name: sanitizeName(name),
-    character: DEFAULT_CHARACTER,
-    skin: DEFAULT_SKIN,
-    ...characterDesign(DEFAULT_CHARACTER),
+    character,
+    skin,
+    ...characterDesign(character),
     country,
   };
 }
