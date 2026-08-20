@@ -7,6 +7,9 @@ import archery, {
   COUNTDOWN_MS,
   AIM_REACH,
   aimThatCancels,
+  crosshairAt,
+  swayAt,
+  SWAY_REACH,
   landing,
   ringScore,
 } from '../shared/events/archery.js';
@@ -67,6 +70,47 @@ test('wind pushes the arrow off centre', () => {
   const gusty = landing({ x: 0, y: 0 }, { x: 0.8, y: 0 });
   assert.ok(Math.abs(calm.dx) < 0.001, `calm shot drifted: ${calm.dx}`);
   assert.ok(gusty.dx > 0.3, `wind did nothing: ${gusty.dx}`);
+});
+
+test('the barrel drifts, gently and without repeating', () => {
+  const seed = 0.42;
+  const seen = [];
+  for (let ms = 0; ms < 20_000; ms += 250) {
+    const at = swayAt(seed, 1_700_000_000_000 + ms);
+    const r = Math.hypot(at.x, at.y);
+    assert.ok(r <= SWAY_REACH * 1.45, `drift ran to ${r}, past what one thumb can chase`);
+    seen.push(at.x);
+  }
+  // A single sine would revisit the same handful of values; two incommensurate
+  // ones should not settle into a pattern a player can simply memorise.
+  assert.ok(new Set(seen.map((v) => v.toFixed(3))).size > seen.length * 0.9, 'the drift repeats');
+});
+
+test('the drift is the same on every client that knows the seed', () => {
+  const when = 1_700_000_123_456;
+  assert.deepEqual(swayAt(0.42, when), swayAt(0.42, when));
+  assert.notDeepEqual(swayAt(0.42, when), swayAt(0.77, when));
+});
+
+test('the drift moves the crosshair, and the wind does not', () => {
+  const sway = { x: 0.2, y: -0.1 };
+  const still = crosshairAt({ x: 0, y: 0 }, { x: 0, y: 0 });
+  const drifted = crosshairAt({ x: 0, y: 0 }, sway);
+  assert.deepEqual(still, { dx: 0, dy: 0 });
+  assert.deepEqual(drifted, { dx: 0.2, dy: -0.1 });
+
+  // The wind is added AFTER the crosshair: what you see is not what you get.
+  const shot = landing({ x: 0, y: 0 }, { x: 0.8, y: 0 }, sway);
+  assert.ok(shot.dx > drifted.dx, 'the wind failed to bend the shot');
+  assert.equal(shot.dy, drifted.dy);
+});
+
+test('dragging against the drift brings the crosshair home', () => {
+  for (const sway of [{ x: 0.2, y: 0 }, { x: -0.15, y: 0.18 }, { x: 0, y: -0.22 }]) {
+    const aim = aimThatCancels({ x: 0, y: 0 }, sway);
+    const at = crosshairAt(aim, sway);
+    assert.ok(Math.hypot(at.dx, at.dy) < 0.001, `crosshair left at ${at.dx}, ${at.dy}`);
+  }
 });
 
 test('leaning into the wind cancels it, in both axes', () => {
@@ -168,7 +212,7 @@ test('the wire snapshot is compact and quantized', () => {
   const state = fresh();
   shoot(state, 'ace', { x: 0, y: 0 }, live);
   const wire = archery.snapshot(state);
-  assert.deepEqual(Object.keys(wire).sort(), ['a', 'e', 's', 'w']);
+  assert.deepEqual(Object.keys(wire).sort(), ['a', 'e', 'k', 's', 'w']);
   assert.deepEqual(Object.keys(wire.a.ace).sort(), ['d', 'l', 'sc', 'sh']);
   const [dx] = wire.a.ace.sh[0];
   assert.equal(Math.round(dx * 100) / 100, dx, 'landing not quantized');

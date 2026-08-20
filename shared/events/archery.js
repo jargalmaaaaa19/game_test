@@ -4,23 +4,29 @@
 // as the authority; the client runs the SAME module to place its reticle, so
 // where the player sees the arrow go is where the server scores it.
 //
-// AIM AND LOOSE. A stick moves a reticle over the target; a separate button
-// looses the arrow. Three arrows each, all against the same wind, and the wind
-// is the whole decision — point at the gold and it drifts, point off into the
-// wind by the right amount and it does not.
+// HOLD TO AIM, RELEASE TO FIRE. One finger anywhere on the glass drags the
+// crosshair; lifting it fires from wherever the crosshair was. Three shots
+// each, and TWO forces pull the shot off the gold:
 //
-// This replaced a pair of timed sweeps (a marker sliding across for angle, a
-// gauge bouncing for power). Two things fell out of the change:
+//  1. SWAY — the barrel drifting, drawn on screen. The player counters it by
+//     dragging against it, and the skill is releasing on the beat where the
+//     drift has carried the crosshair home.
+//  2. WIND — invisible, announced in the HUD, and added only once the shot is
+//     away. The crosshair is where you are POINTING, never a promise.
 //
-//  1. It is much more forgiving, which is the point — this is a party game, not
-//     a shooting sim. A player who never touches the stick still looses down
-//     the middle and only loses what the wind takes, so nobody is ever left
-//     with nothing on the scoreboard.
-//  2. There is nothing left to cheat. The old sweeps had to be sampled against
-//     the server clock and bounded, or a modded client could report the perfect
-//     instant every time. An aim is not a measurement, it is a CHOICE — a
-//     perfect client and a perfect player send the same number — so the server
-//     takes it as given and only clamps the range.
+// The two are deliberately different KINDS of problem: one is a moving thing
+// you chase, the other a fixed number you lean into.
+//
+// Sway is a pure function of the round's seed and the clock, so the server
+// computes the same drift the client drew and the shot stays honest without a
+// timestamp on the wire. What the client sends is only the DRAG — the part the
+// player chose — and a choice is not a measurement: a perfect client and a
+// perfect player send the same number, so the server takes it as given and
+// clamps the range.
+//
+// A player who never touches the glass still fires down the middle and loses
+// only what the drift and the wind take, so nobody is ever left with nothing on
+// the scoreboard. This is a party game, not a shooting sim.
 
 export const ARROWS_PER_ATHLETE = 3;
 export const COUNTDOWN_MS = 2_500;
@@ -36,11 +42,34 @@ export const AIM_REACH = 1.3;
 // still reachable in the worst wind, but only if you actually correct for it.
 const WIND_PULL = 0.55;
 
+// How far the crosshair drifts on its own, in target radii. Two rings' worth:
+// enough that standing still is never the right answer, gentle enough that it
+// can be chased with one thumb.
+export const SWAY_REACH = 0.22;
+
 // Two arrows closer together than this are a double-fire, not two decisions.
 const MIN_SHOT_INTERVAL_MS = 250;
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
+
+/**
+ * Where the barrel has drifted to at `now`, in target radii.
+ *
+ * PURE, and a function of the clock rather than a value on the wire: the client
+ * draws the crosshair with it at 60fps and the server scores the shot with it,
+ * so neither has to tell the other where the sight was. Two waves of different,
+ * incommensurate periods, which is what stops the drift reading as a metronome
+ * a player can simply memorise.
+ */
+export function swayAt(seed, now) {
+  const t = now / 1000;
+  const a = num(seed) * 6.283;
+  return {
+    x: (Math.sin(t * 0.83 + a) * 0.62 + Math.sin(t * 1.97 + a * 2.3) * 0.38) * SWAY_REACH,
+    y: (Math.cos(t * 0.67 + a * 1.4) * 0.62 + Math.sin(t * 1.51 + a * 3.1) * 0.38) * SWAY_REACH,
+  };
+}
 
 /**
  * Ring score from the distance to the centre, in target radii.
@@ -52,23 +81,35 @@ export function ringScore(r) {
 }
 
 /**
- * Where an arrow loosed at `aim` lands, in target radii from the centre.
+ * Where the crosshair is sitting, in target radii from the centre.
  *
- * `aim` is the stick, each axis in [-1, 1], +y up. The reticle the player is
- * looking at sits at `aim * AIM_REACH`; the wind is added on top, which is
- * exactly why the reticle is not a promise.
+ * `aim` is the drag, each axis in [-1, 1], +y up. This is what the player can
+ * SEE — their drag plus the drift — and the client draws it from exactly this
+ * call, so the picture and the score cannot disagree.
  */
-export function landing(aim, wind) {
+export function crosshairAt(aim, sway) {
   return {
-    dx: clamp(num(aim?.x), -1, 1) * AIM_REACH + num(wind?.x) * WIND_PULL,
-    dy: clamp(num(aim?.y), -1, 1) * AIM_REACH + num(wind?.y) * WIND_PULL,
+    dx: clamp(num(aim?.x), -1, 1) * AIM_REACH + num(sway?.x),
+    dy: clamp(num(aim?.y), -1, 1) * AIM_REACH + num(sway?.y),
   };
 }
 
-/** Where to point to cancel a given wind — the bot's target, and the answer. */
-export const aimThatCancels = (wind) => ({
-  x: clamp((-num(wind?.x) * WIND_PULL) / AIM_REACH, -1, 1),
-  y: clamp((-num(wind?.y) * WIND_PULL) / AIM_REACH, -1, 1),
+/**
+ * Where a shot fired at `aim` lands, in target radii from the centre: the
+ * crosshair, plus the wind that was never on the crosshair to begin with.
+ */
+export function landing(aim, wind, sway) {
+  const at = crosshairAt(aim, sway);
+  return {
+    dx: at.dx + num(wind?.x) * WIND_PULL,
+    dy: at.dy + num(wind?.y) * WIND_PULL,
+  };
+}
+
+/** The drag that cancels a given wind and drift — the bot's aim, and the answer. */
+export const aimThatCancels = (wind, sway) => ({
+  x: clamp((-num(wind?.x) * WIND_PULL - num(sway?.x)) / AIM_REACH, -1, 1),
+  y: clamp((-num(wind?.y) * WIND_PULL - num(sway?.y)) / AIM_REACH, -1, 1),
 });
 
 export default {
@@ -84,6 +125,10 @@ export default {
         y: Math.round((rng() - 0.5) * 100) / 100,
       });
     }
+
+    // The drift is the same for everyone, from the same seed: one shared set
+    // of conditions is the only version of this that is fair.
+    const sway = Math.round(rng() * 1000) / 1000;
 
     const startsAt = now + COUNTDOWN_MS;
     const athletes = {};
@@ -101,15 +146,17 @@ export default {
         lastShotAt: 0,
       };
     }
-    return { startsAt, endsAt: startsAt + MAX_ROUND_MS, winds, athletes };
+    return { startsAt, endsAt: startsAt + MAX_ROUND_MS, winds, sway, athletes };
   },
 
   /**
-   * One arrow. `input.x` and `input.y` are the stick, each in [-1, 1], +y up.
+   * One shot. `input.x` and `input.y` are the drag, each in [-1, 1], +y up.
    *
-   * Taken at face value and merely clamped — see the note at the top of the
-   * file. The only thing worth defending against here is the button being held
-   * down or scripted, which the interval covers.
+   * The drag is taken at face value and merely clamped — see the note at the
+   * top of the file. The drift is NOT taken from the client: it is recomputed
+   * here from the seed and this server's own clock, so a modded client cannot
+   * claim the barrel was steadier than it was. The only other thing worth
+   * defending against is the trigger being scripted, which the interval covers.
    */
   applyInput(state, playerId, input, now) {
     const a = state.athletes[playerId];
@@ -119,7 +166,7 @@ export default {
     a.lastShotAt = now;
 
     const wind = state.winds[a.shots.length] ?? { x: 0, y: 0 };
-    const { dx, dy } = landing(input, wind);
+    const { dx, dy } = landing(input, wind, swayAt(state.sway, now));
     const score = ringScore(Math.hypot(dx, dy));
 
     a.shots.push({
@@ -132,8 +179,8 @@ export default {
     if (a.shots.length >= ARROWS_PER_ATHLETE) a.done = true;
   },
 
-  // Nothing moves between arrows: an aim is held by the player's thumb, not by
-  // the clock, so there is no per-tick simulation to run.
+  // Nothing to advance: the drift is a function of the clock rather than a
+  // thing that has to be stepped, and an aim is held by the player's thumb.
   step() {},
 
   isFinished(state, now) {
@@ -166,7 +213,7 @@ export default {
         sh: at.shots.map((s) => [s.dx, s.dy, s.score]),
       };
     }
-    return { s: state.startsAt, e: state.endsAt, w: state.winds, a };
+    return { s: state.startsAt, e: state.endsAt, w: state.winds, k: state.sway, a };
   },
 
   /** Bot seats and stalled-player fill: corrects for the wind, imperfectly. */
@@ -178,7 +225,7 @@ export default {
     if (now - Math.max(a.lastShotAt, state.startsAt) < 1_600) return null;
 
     const wind = state.winds[a.shots.length] ?? { x: 0, y: 0 };
-    const ideal = aimThatCancels(wind);
+    const ideal = aimThatCancels(wind, swayAt(state.sway, now));
     const slop = (1 - difficulty) * 0.3;
     return { x: clamp(ideal.x + slop, -1, 1), y: clamp(ideal.y - slop, -1, 1) };
   },

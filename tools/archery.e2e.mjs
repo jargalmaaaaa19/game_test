@@ -5,7 +5,7 @@
 //   node tools/archery.e2e.mjs
 
 import { io } from 'socket.io-client';
-import archery, { ARROWS_PER_ATHLETE, aimThatCancels } from '../shared/events/archery.js';
+import archery, { ARROWS_PER_ATHLETE, aimThatCancels, swayAt } from '../shared/events/archery.js';
 
 const URL = process.env.SMOKE_URL || 'http://localhost:3200';
 
@@ -55,8 +55,12 @@ function autoArcher(socket, playerId, style, clock) {
     lastSentAt = now;
 
     const wind = s.w[arrow] ?? { x: 0, y: 0 };
-    // The good archer leans into the wind; the wild one yanks the stick.
-    const aim = style === 'good' ? aimThatCancels(wind) : { x: 0.95, y: -0.9 };
+    // The good shooter drags against the drift AND leans into the wind — the
+    // drift from the same seeded clock the server will score against. The wild
+    // one yanks the sight off the target and lets go.
+    const aim = style === 'good'
+      ? aimThatCancels(wind, swayAt(s.k ?? 0, now))
+      : { x: 0.95, y: -0.9 };
     socket.emit('game:input', aim);
   });
 }
@@ -112,6 +116,10 @@ const run = async () => {
   check('the idle archer fired none and scored 0', shots.idle?.length === 0 && totals.idle === 0, totals);
   check('every arrow scored inside 0..10', Object.values(shots).flat().every((v) => v >= 0 && v <= 10), shots);
   check('aiming into the wind beat aiming wild', totals.ace > totals.wild, totals);
+  // The whole mechanic in one number: a shooter who cancels both the drift and
+  // the wind should be in the middle rings, not merely on the target.
+  check('countering the drift and the wind puts it near the gold',
+    totals.ace >= ARROWS_PER_ATHLETE * 7, totals);
 
   const order = podium.placements.map((id) => byId[id]);
   check('the aimer takes first', order[0] === 'ace', order);

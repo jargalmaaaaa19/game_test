@@ -49,7 +49,7 @@ export const EVENT_CATALOG = [
   },
   {
     id: 'archery',
-    name: { en: 'Archery', mn: 'Сурын харваа' },
+    name: { en: 'Target Shooting', mn: 'Буудлага' },
     input: INPUT_SCHEME.AIM_DRAG,
     scoring: 'highest_score',
     durationMs: 45_000,

@@ -49,7 +49,7 @@ test('credits the runner-up', () => {
 test('lists the programme in the reader language', () => {
   const text = buildShareText({ champion, standings, programme });
   assert.ok(text.includes('100м гүйлт'), text);
-  assert.ok(text.includes('Сурын харваа'), text);
+  assert.ok(text.includes('Буудлага'), text);
 });
 
 test('a two-player match has no runner-up line dangling', () => {
