@@ -4,6 +4,7 @@ import { DEFAULT_CHARACTER, DEFAULT_SKIN } from '@shared/avatars.js';
 import { DEFAULT_COUNTRY } from '@shared/countries.js';
 import { t, errorText } from './i18n.js';
 import { SERVER_URL, useRoomSocket } from './net/useRoomSocket.js';
+import { invitedRoomId, onInvitedToRoom } from './net/usion.js';
 import HomePage from './components/HomePage.jsx';
 import LobbyPage from './components/LobbyPage.jsx';
 import SprintScreen from './components/SprintScreen.jsx';
@@ -110,6 +111,43 @@ export default function App({ hostConfig }) {
   const handleCreate = () => guard(() => createRoom({ name: look.name || undefined }));
   const handleJoin = (code) => guard(() => joinRoom({ code, name: look.name || undefined }));
 
+  // --- arriving from an invite ---------------------------------------------
+  // The invited player never sees a code. The platform hands us the room, and
+  // the only correct thing to do with it is walk straight in: a player who
+  // tapped "join" in a chat has already answered every question the home
+  // screen would ask them.
+  //
+  // Two doors, because an invite can be accepted before the game is open (the
+  // roomId is in the launch params) or while it is already sitting on the home
+  // screen (GAME_ROOM_ASSIGNED arrives live). Missing the second one strands
+  // the most common case of all: the host invites a friend who is already in
+  // the game.
+  const [invitePending, setInvitePending] = useState(() => Boolean(invitedRoomId()));
+  const joinedRef = useRef(null);
+
+  const acceptInvite = useCallback(
+    (roomId) => {
+      if (!roomId || joinedRef.current === roomId) return;
+      joinedRef.current = roomId; // once per room, or a re-render re-joins
+      setInvitePending(true);
+      guard(() => joinRoom({ code: roomId, name: look.name || undefined })).finally(() =>
+        setInvitePending(false),
+      );
+    },
+    // `look.name` is read at call time on purpose: adding it here would re-arm
+    // the effect every keystroke in the name field.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [guard, joinRoom],
+  );
+
+  useEffect(() => {
+    // Wait for the socket: joining before the connection is up just fails.
+    if (connection !== 'connected' || room) return undefined;
+    const launched = invitedRoomId();
+    if (launched) acceptInvite(launched);
+    return onInvitedToRoom(acceptInvite);
+  }, [connection, room, acceptInvite]);
+
   if (connection !== 'connected' && !room) {
     return (
       <div className="grid min-h-full place-items-center px-6 text-center">
@@ -127,6 +165,20 @@ export default function App({ hostConfig }) {
               <p className="mt-2 break-all text-[11px] text-neutral-600">{SERVER_URL}</p>
             </>
           )}
+          <p className="mt-2 text-xs text-neutral-600">{t.appName}</p>
+        </div>
+      </div>
+    );
+  }
+
+  // Joining an invited room: not the home screen, and not an error either —
+  // a player who tapped an invite should never be shown a code field on the
+  // way in, even for the second it takes to seat them.
+  if (!room && invitePending && !error) {
+    return (
+      <div className="grid min-h-full place-items-center px-6 text-center">
+        <div className="max-w-xs">
+          <p className="text-sm text-neutral-300">{t.joiningInvite}</p>
           <p className="mt-2 text-xs text-neutral-600">{t.appName}</p>
         </div>
       </div>
