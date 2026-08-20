@@ -9,7 +9,6 @@ import LobbyPage from './components/LobbyPage.jsx';
 import SprintScreen from './components/SprintScreen.jsx';
 import ArcheryScreen from './components/ArcheryScreen.jsx';
 import LongJumpScreen from './components/LongJumpScreen.jsx';
-import HammerThrowScreen from './components/HammerThrowScreen.jsx';
 import SwimScreen from './components/SwimScreen.jsx';
 import { IntroScreen, PodiumScreen } from './components/MatchScreens.jsx';
 import CeremonyScreen from './components/CeremonyScreen.jsx';
@@ -21,7 +20,6 @@ const EVENT_SCREENS = {
   sprint_100m: SprintScreen,
   archery: ArcheryScreen,
   long_jump: LongJumpScreen,
-  hammer_throw: HammerThrowScreen,
   freestyle_swim: SwimScreen,
 };
 

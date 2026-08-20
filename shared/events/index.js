@@ -28,7 +28,6 @@ export const INPUT_SCHEME = {
   TAP_AND_HOLD: 'tap_and_hold', // mash, then press-and-release — the long jump
   AIM_DRAG: 'aim_drag', // sweep and lock — archery
   RHYTHM: 'rhythm', // strike on the beat — the swim
-  SPIN_DRAG: 'spin_drag', // circle the glass, then let go — the hammer
 };
 
 export const EVENT_CATALOG = [
@@ -54,14 +53,6 @@ export const EVENT_CATALOG = [
     input: INPUT_SCHEME.AIM_DRAG,
     scoring: 'highest_score',
     durationMs: 45_000,
-    maxLanes: 10,
-  },
-  {
-    id: 'hammer_throw',
-    name: { en: 'Hammer Throw', mn: 'Алх шидэлт' },
-    input: INPUT_SCHEME.SPIN_DRAG,
-    scoring: 'highest_score',
-    durationMs: 50_000,
     maxLanes: 10,
   },
   {

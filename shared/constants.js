@@ -8,7 +8,7 @@ export const TICK_MS = 1000 / TICK_HZ;
 // this at or below the catalog size — `drawProgramme` throws rather than
 // repeat a sport, so asking for more events than exist means no match can
 // start at all.
-export const EVENTS_PER_MATCH = 5;
+export const EVENTS_PER_MATCH = 4;
 
 export const MIN_PLAYERS = 2;
 export const MAX_PLAYERS = 10;
