@@ -8,6 +8,11 @@ import { defaultIdentity } from './identity.js';
  * transitions, and handlers.js owns all socket I/O. Nothing here touches a
  * socket, which is what makes a room testable without a network.
  */
+// What a bot seat is worth, cycled in order so the first bot is always the one
+// worth beating. Read by the play tick, which hands it to the event's own
+// `botInput`.
+const BOT_SKILL = [0.88, 0.72, 0.6, 0.8, 0.52, 0.66, 0.84, 0.58, 0.74];
+
 export class Room {
   constructor({ id, code, maxPlayers = MAX_PLAYERS, now }) {
     this.id = id;
@@ -89,8 +94,13 @@ export class Room {
       userId: userId ?? null,
       socketId,
       ...identity,
-      ready: false,
-      connected: !isBot,
+      ready: isBot, // a bot is never the reason a start is blocked
+      // TRUE for a bot, which has no socket at all. `connected` is the
+      // COMPETITOR test — `connectedPlayers()` is what seeds the sim and hands
+      // out lanes — so a bot marked disconnected was seated, invisible to the
+      // race, and left the room one player short of starting. The sweeper reads
+      // `disconnectedAt`, which a bot never sets, so nothing tries to reap it.
+      connected: true,
       isBot,
       joinedAt: now,
       lastSeenAt: now,
@@ -102,6 +112,29 @@ export class Room {
     this.emptySince = null;
     this.touch(now);
     return player;
+  }
+
+  /**
+   * Fill the room with bots, for a solo launch.
+   *
+   * Deliberately only ever called on a room the caller just created (see
+   * `room:solo`): a fill that could reach an existing room is how a bot-fill
+   * flag once hijacked live games, so the capability simply does not exist
+   * anywhere a stranger's room could be named.
+   */
+  addBots(count, now) {
+    const seats = Math.max(0, Math.min(count, this.maxPlayers - this.players.size));
+    const bots = [];
+    for (let i = 0; i < seats; i += 1) {
+      const bot = this.addPlayer({ playerId: `bot_${randomUUID().slice(0, 8)}`, isBot: true, now });
+      // A SPREAD of ability, not one difficulty repeated. A field of identical
+      // bots finishes as a dead heat every time and tells the player nothing
+      // about how well they did; a spread gives them somebody to beat and
+      // somebody to chase.
+      bot.skill = BOT_SKILL[i % BOT_SKILL.length];
+      bots.push(bot);
+    }
+    return bots;
   }
 
   /** Reclaim an existing seat after a reconnect — keeps look, ready flag, points. */

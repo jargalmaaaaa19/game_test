@@ -6,6 +6,12 @@ import { normalizeRoomCode } from './roomCode.js';
 import { isCountryTaken, validateIdentity } from './identity.js';
 import { abortMatch, broadcast, finishEvent, requestRematch, startMatch } from './phases.js';
 import { config } from './config.js';
+
+// How big a field a solo launch gets. Four athletes is enough for a race to
+// have a middle — a duel against one bot is either a win or a loss and never a
+// position — and small enough that the swipe feed's first frame is not ten
+// characters the player has to pick themselves out of.
+const DEFAULT_SOLO_BOTS = 3;
 import { log } from './log.js';
 
 const fail = (code, message, detail) => ({ ok: false, error: { code, message, ...(detail && { detail }) } });
@@ -86,6 +92,60 @@ export function registerHandlers(io, store) {
 
       log.info('room.joined', { roomId: room.id, code: room.code, playerId: player.id, host: true });
       respond(cb, { ok: true, code: room.code, roomId: room.id, playerId: player.id, state: room.snapshot() });
+      broadcast(io, room);
+    });
+
+    /**
+     * A solo launch: room, bots, and the first event, in one call.
+     *
+     * This is the GameTok door. The feed opens the game and the player is
+     * racing — no menu, no lobby, no ready toggle, nothing to tap. Everything
+     * it does is something the lobby could do by hand; what it removes is the
+     * five taps in between.
+     *
+     * The bots are seated into a room created HERE, one line earlier, which is
+     * why a bot fill is safe to expose at all: there is no room id in the
+     * payload, so there is no room but a brand new one for it to reach.
+     */
+    socket.on('room:solo', (payload = {}, cb) => {
+      if (!limit.lobby()) return respond(cb, fail(ERROR.RATE_LIMITED, 'slow down'));
+      if (socket.data.roomId) {
+        return respond(cb, fail(ERROR.ALREADY_IN_ROOM, 'leave your current room first'));
+      }
+
+      const now = Date.now();
+      const room = store.create({ maxPlayers: MAX_PLAYERS, now });
+      const player = room.addPlayer({
+        userId: socket.data.userId,
+        socketId: socket.id,
+        name: payload.name || socket.data.userName,
+        now,
+      });
+      seat(room, player);
+      room.setReady(player.id, true, now);
+
+      // One human plus a field. Clamped to what the room can hold, and to at
+      // least one, or the start gate rejects a party of one.
+      const asked = Number(payload.bots);
+      const wanted = Number.isFinite(asked) ? asked : DEFAULT_SOLO_BOTS;
+      room.addBots(Math.max(1, Math.min(wanted, MAX_PLAYERS - 1)), now);
+
+      const result = startMatch(io, room, player.id, now);
+      if (!result.ok) {
+        log.warn('room.solo.start_failed', { roomId: room.id, code: result.code });
+        return respond(cb, fail(result.code, result.message, result.detail));
+      }
+
+      log.info('room.solo', { roomId: room.id, playerId: player.id, bots: room.players.size - 1 });
+      respond(cb, {
+        ok: true,
+        code: room.code,
+        roomId: room.id,
+        playerId: player.id,
+        state: room.snapshot(),
+        seed: room.seed,
+        programme: room.programme,
+      });
       broadcast(io, room);
     });
 

@@ -21,6 +21,11 @@ import { log } from './log.js';
 // the podium and the medal table can be built and played against before all
 // twelve sims exist.
 // ---------------------------------------------------------------------------
+// How many times a bot is asked for an input inside one tick. Four gives it
+// ~12ms of timing resolution, which is the order a thumb has, and is what
+// keeps a field of different skills from quantising into one finishing time.
+const BOT_POLLS_PER_TICK = 4;
+
 const simCache = new Map();
 
 async function loadSim(eventId) {
@@ -204,6 +209,27 @@ async function beginPlay(io, room) {
     room.tickHandle = setInterval(() => {
       const t = Date.now();
       const dt = Math.min((t - last) / 1000, 0.25); // clamped: a stalled loop must not teleport the sim
+
+      // Bots play through the SAME `applyInput` a phone reaches, using the
+      // event's own `botInput`. They get no private path into the sim: a bot
+      // that could call something a player cannot is a bot whose difficulty is
+      // untestable and whose results are unexplainable.
+      //
+      // Polled several times ACROSS the elapsed tick rather than once at the
+      // end of it. A phone can put an input on any millisecond; a bot polled
+      // only on tick boundaries can only ever act on multiples of TICK_MS, and
+      // every cadence between two of them rounds to the same one. Three bots
+      // of visibly different skill ran the 100m in an identical 9.342s that
+      // way — the whole field quantised into one bucket.
+      for (const player of room.players.values()) {
+        if (!player.isBot || !sim.botInput) continue;
+        for (let sub = 1; sub <= BOT_POLLS_PER_TICK; sub += 1) {
+          const at = last + ((t - last) * sub) / BOT_POLLS_PER_TICK;
+          const input = sim.botInput(room.eventState, player.id, player.skill ?? 0.75, at);
+          if (input) sim.applyInput(room.eventState, player.id, input, at);
+        }
+      }
+
       last = t;
       sim.step(room.eventState, dt, t);
       io.to(room.id).emit('game:snapshot', { i: room.eventIndex, t, s: wire() });
