@@ -1,3 +1,5 @@
+import { ROOM_CODE_LENGTH } from '@shared/constants.js';
+
 // Thin wrapper over the Usion SDK.
 //
 // Two reasons this exists rather than sprinkling `window.Usion?.` through the
@@ -129,12 +131,36 @@ export function launchedSolo(hostConfig) {
  */
 export function invitedRoomId() {
   if (!embedded) return null;
+  if (launchMode() === 'single') return null; // a feed launch is not an invite
   try {
-    const params = sdk().getLaunchParams?.();
-    return params?.roomId || null;
+    return inviteRoom(sdk().getLaunchParams?.()?.roomId);
   } catch {
     return null;
   }
+}
+
+/**
+ * A room id that is really an invitation, or null.
+ *
+ * TWO kinds of id reach this. One is OUR room code — four characters, what
+ * `game.invite` was handed, and the string `room:join` takes. The other is the
+ * `standalone_*` room the platform creates for a SOLO launch, purely so the
+ * SDK has a room to talk about.
+ *
+ * Handing the second one to `room:join` is how a player ended up staring at
+ * "Буруу утга илгээлээ" on the home screen: the server wants a four character
+ * code, rejects the placeholder as INVALID_INPUT, and the failed join then
+ * blocked the solo launch that should have happened instead. They were never
+ * in a room at all — which is exactly why no friend could reach them.
+ *
+ * Anything that cannot be one of our codes is somebody else's identifier, and
+ * `room:join` would only reject it. Ignoring it and letting the player into a
+ * game beats stranding them on an error.
+ */
+function inviteRoom(roomId) {
+  const id = typeof roomId === 'string' ? roomId.trim() : '';
+  if (!id || /^standalone[_-]/i.test(id)) return null;
+  return id.replace(/[\s-]/g, '').length === ROOM_CODE_LENGTH ? id : null;
 }
 
 /**
@@ -152,7 +178,10 @@ export function onInvitedToRoom(handler) {
   if (!embedded) return () => {};
   try {
     sdk().game.onRoomAssigned((payload) => {
-      const roomId = payload?.roomId || null;
+      // Guarded exactly like the launch params: a promotion that names a room
+      // this game cannot join is not a promotion, and passing it on would put
+      // the same INVALID_INPUT on screen mid-session.
+      const roomId = inviteRoom(payload?.roomId);
       if (roomId) handler(roomId);
     });
     return () => {
