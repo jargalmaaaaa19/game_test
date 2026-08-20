@@ -1,6 +1,6 @@
 import { ERROR, MAX_PLAYERS, MIN_PLAYERS, PHASE } from '../../shared/constants.js';
 import { COUNTRIES } from '../../shared/countries.js';
-import { BUILDS, HAIRSTYLES, OUTFITS, PRESETS, SKIN_TONES } from '../../shared/avatars.js';
+import { CHARACTERS, SKIN_TONES } from '../../shared/avatars.js';
 import { EVENT_CATALOG } from '../../shared/events/index.js';
 import { normalizeRoomCode } from './roomCode.js';
 import { isCountryTaken, validateIdentity } from './identity.js';
@@ -49,11 +49,8 @@ export function registerHandlers(io, store) {
     // The catalogs the pickers render from, so the client never hardcodes a list
     // that can drift out of sync with what the server will accept.
     socket.emit('catalog', {
-      builds: BUILDS,
+      characters: CHARACTERS,
       skins: SKIN_TONES,
-      hairstyles: HAIRSTYLES,
-      presets: PRESETS,
-      outfits: OUTFITS,
       countries: COUNTRIES,
       events: EVENT_CATALOG,
       limits: { minPlayers: MIN_PLAYERS, maxPlayers: MAX_PLAYERS, uniqueFlags: config.uniqueFlags },

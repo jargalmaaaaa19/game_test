@@ -1,4 +1,4 @@
-import { BUILDS, HAIRSTYLES, OUTFITS, PRESETS, SKIN_TONES } from '@shared/avatars.js';
+import { CHARACTERS, SKIN_TONES, characterDesign } from '@shared/avatars.js';
 import { COUNTRIES } from '@shared/countries.js';
 import { NAME_MAX_LENGTH } from '@shared/constants.js';
 import { t, labelFor } from '../i18n.js';
@@ -7,8 +7,14 @@ import Flag from './Flag.jsx';
 import AvatarPortrait from './AvatarPortrait.jsx';
 
 /**
- * Avatar customization: a preset gallery, then skin tone, hairstyle, outfit and
- * national flag.
+ * Pick a character, pick a skin tone, pick a flag. Three decisions, and the
+ * first one is made by looking rather than by reading.
+ *
+ * The characters are shown IN THE PLAYER'S CURRENT TONE rather than each in its
+ * own — the gallery is a preview of what you would get, not a poster of who
+ * exists, and a tile that changes the skin out from under you when you tap it
+ * is a tile that lied. It also makes the two rows read as one decision: change
+ * the tone and the whole cast follows.
  *
  * Rendered as radio groups, not selects — a phone select is a modal that hides
  * the very preview the player is judging the choice against. `takenCountries`
@@ -18,6 +24,9 @@ import AvatarPortrait from './AvatarPortrait.jsx';
 export default function AvatarStudio({ value, onChange, takenCountries = [], showName = true }) {
   const set = (patch) => onChange({ ...value, ...patch });
   const taken = new Set(takenCountries.filter((c) => c !== value.country));
+  // The picker stores a character; every renderer wants the design it resolves
+  // to. Same resolution the server does when it accepts the identity.
+  const design = characterDesign(value.character);
 
   return (
     <div className="space-y-6">
@@ -27,9 +36,9 @@ export default function AvatarStudio({ value, onChange, takenCountries = [], sho
         <div className="h-28 w-28 shrink-0 overflow-hidden rounded-2xl border border-neutral-800 bg-neutral-900">
           <Avatar3D
             skin={value.skin}
-            build={value.build}
-            hair={value.hair}
-            outfit={value.outfit}
+            build={design.build}
+            hair={design.hair}
+            outfit={design.outfit}
             interactive
             className="h-full w-full"
             title={value.name}
@@ -56,65 +65,39 @@ export default function AvatarStudio({ value, onChange, takenCountries = [], sho
         )}
       </div>
 
-      {/* One tap to a finished character — three pickers is a lot to face when
-          your friends are already waiting in the hall. */}
+      {/* No names under these on purpose — see CHARACTERS in shared/avatars.js.
+          They are told apart by how they look, so the tiles are as large as the
+          row allows and carry nothing else. */}
       <div>
-        <span className="label">{t.presets}</span>
+        <span className="label">{t.characters}</span>
         <div className="grid grid-cols-4 gap-2">
-          {PRESETS.map((preset) => {
-            const active =
-              value.skin === preset.skin &&
-              value.hair === preset.hair &&
-              value.outfit === preset.outfit &&
-              value.build === preset.build;
+          {CHARACTERS.map((character) => {
+            const active = value.character === character.id;
             return (
               <button
-                key={preset.id}
+                key={character.id}
                 type="button"
-                title={labelFor(preset.id, preset.label)}
-                onClick={() =>
-                  set({ skin: preset.skin, hair: preset.hair, outfit: preset.outfit, build: preset.build })
-                }
+                aria-pressed={active}
+                onClick={() => set({ character: character.id })}
                 className={[
-                  'flex flex-col items-center rounded-xl border py-1.5 transition',
+                  'grid place-items-center rounded-xl border py-2 transition',
                   active
                     ? 'border-white bg-neutral-800'
                     : 'border-neutral-800 bg-neutral-900 hover:border-neutral-700',
                 ].join(' ')}
               >
                 <AvatarPortrait
-                  skin={preset.skin}
-                  build={preset.build}
-                  hair={preset.hair}
-                  outfit={preset.outfit}
-                  className="h-12 w-12"
+                  skin={value.skin}
+                  build={character.build}
+                  hair={character.hair}
+                  outfit={character.outfit}
+                  className="h-16 w-16"
                 />
-                <span className="mt-0.5 truncate px-1 text-[10px] text-neutral-400">
-                  {labelFor(preset.id, preset.label)}
-                </span>
               </button>
             );
           })}
         </div>
       </div>
-
-      <Group label={t.build}>
-        {BUILDS.map((b) => (
-          <button
-            key={b.id}
-            type="button"
-            onClick={() => set({ build: b.id })}
-            className={[
-              'rounded-xl border px-4 py-2 text-sm transition',
-              value.build === b.id
-                ? 'border-white bg-neutral-800 text-white'
-                : 'border-neutral-800 bg-neutral-900 text-neutral-400 hover:border-neutral-700',
-            ].join(' ')}
-          >
-            {labelFor(b.id, b.label)}
-          </button>
-        ))}
-      </Group>
 
       <Group label={t.skinTone}>
         {SKIN_TONES.map((tone) => (
@@ -126,36 +109,6 @@ export default function AvatarStudio({ value, onChange, takenCountries = [], sho
             label={labelFor(tone.id, tone.label)}
           >
             <span className="h-7 w-7 rounded-full" style={{ backgroundColor: tone.hex }} />
-          </Swatch>
-        ))}
-      </Group>
-
-      <Group label={t.hairstyle}>
-        {HAIRSTYLES.map((style) => (
-          <Swatch
-            key={style.id}
-            name="hair"
-            checked={value.hair === style.id}
-            onSelect={() => set({ hair: style.id })}
-            label={labelFor(style.id, style.label)}
-            wide
-          >
-            <AvatarPortrait skin={value.skin} build={value.build} hair={style.id} outfit={value.outfit} className="h-11 w-11" />
-          </Swatch>
-        ))}
-      </Group>
-
-      <Group label={t.outfitStyle}>
-        {OUTFITS.map((outfit) => (
-          <Swatch
-            key={outfit.id}
-            name="outfit"
-            checked={value.outfit === outfit.id}
-            onSelect={() => set({ outfit: outfit.id })}
-            label={labelFor(outfit.id, outfit.label)}
-            wide
-          >
-            <AvatarPortrait skin={value.skin} build={value.build} hair={value.hair} outfit={outfit.id} className="h-11 w-11" />
           </Swatch>
         ))}
       </Group>
@@ -213,13 +166,12 @@ function Group({ label, children }) {
   );
 }
 
-function Swatch({ name, checked, onSelect, label, children, wide = false }) {
+function Swatch({ name, checked, onSelect, label, children }) {
   return (
     <label
       title={label}
       className={[
-        'grid cursor-pointer place-items-center rounded-xl border transition',
-        wide ? 'h-14 w-14' : 'h-12 w-12',
+        'grid h-12 w-12 cursor-pointer place-items-center rounded-xl border transition',
         checked
           ? 'border-white bg-neutral-800'
           : 'border-neutral-800 bg-neutral-900 hover:border-neutral-700',

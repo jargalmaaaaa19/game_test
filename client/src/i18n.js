@@ -21,10 +21,7 @@ const mn = {
   name: 'Нэр',
   namePlaceholder: 'Нэрээ бичнэ үү',
   skinTone: 'Арьсны өнгө',
-  build: 'Бие бялдар',
-  hairstyle: 'Үс засалт',
-  outfitStyle: 'Хувцасны загвар',
-  presets: 'Бэлэн дүр',
+  characters: 'Дүр сонгох',
   nationalFlag: 'Улсын туг',
   flagTakenHint: 'Сонгогдсон тугийг дахин сонгох боломжгүй',
 
@@ -126,18 +123,6 @@ const mn = {
     sk_1: 'Цайвар', sk_2: 'Элсэн', sk_3: 'Зөгийн бал',
     sk_4: 'Хүрэл', sk_5: 'Хүрэн', sk_6: 'Бараан',
 
-    b_soft: 'Нарийн', b_broad: 'Бүдүүн',
-
-    h_long: 'Урт үс', h_bob: 'Боб', h_curly: 'Буржгар', h_pigtails: 'Хос сүлжээ',
-    h_ponytail: 'Морин сүүл', h_short: 'Богино', h_buzz: 'Тайрсан', h_beard: 'Сахалтай',
-
-    o_dress: 'Даашинз', o_skirt: 'Юбка', o_jeans: 'Жинс', o_hoodie: 'Худи',
-    o_blazer: 'Пиджак', o_track: 'Пүүз хувцас', o_overalls: 'Комбинзон',
-    o_crop: 'Кроп & шорт',
-
-    pr_1: 'Луна', pr_2: 'Саара', pr_3: 'Номи', pr_4: 'Энхэ',
-    pr_5: 'Бат', pr_6: 'Тэмү', pr_7: 'Ганзо', pr_8: 'Дорж',
-
     MN: 'Монгол', JP: 'Япон', KR: 'Өмнөд Солонгос', CN: 'Хятад', US: 'АНУ',
     BR: 'Бразил', DE: 'Герман', FR: 'Франц', GB: 'Их Британи', IT: 'Итали',
     ES: 'Испани', NL: 'Нидерланд', SE: 'Швед', NO: 'Норвеги', PL: 'Польш',
@@ -184,10 +169,7 @@ const en = {
   name: 'Name',
   namePlaceholder: 'Your name',
   skinTone: 'Skin tone',
-  build: 'Build',
-  hairstyle: 'Hairstyle',
-  outfitStyle: 'Outfit',
-  presets: 'Presets',
+  characters: 'Choose a character',
   nationalFlag: 'National flag',
   flagTakenHint: 'A flag already taken cannot be picked again',
 

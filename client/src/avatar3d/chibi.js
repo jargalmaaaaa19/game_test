@@ -1,4 +1,4 @@
-import { DEFAULT_BUILD, getHair, getOutfit, getSkin } from '../../../shared/avatars.js';
+import { BUILDS, getHair, getOutfit, getSkin } from '../../../shared/avatars.js';
 
 // The chibi athlete, built from primitives.
 //
@@ -117,7 +117,7 @@ export function buildChibi(B, scene, look) {
   // A broad build widens the shoulders, straightens the taper, lifts the hem
   // and shows more leg — the same outfit cut for a different frame. Without it
   // every character is the same rounded tube and menswear reads as a tunic.
-  const broad = (look.build ?? DEFAULT_BUILD) === 'b_broad';
+  const broad = (look.build ?? BUILDS[0].id) === 'b_broad';
 
   const legs = buildOutfit(B, scene, under(upper), mats, outfitStyle, broad);
   const hips = buildLegsAndShoes(B, scene, add, mats, legs, broad, root);

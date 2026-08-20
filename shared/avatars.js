@@ -2,9 +2,19 @@
 // the client looks those up. Assets are drawn/generated in the renderer; the
 // platform strips externally-loaded images at deploy, so nothing here is a URL.
 //
-// Three axes: skin tone, hairstyle, outfit. Outfit carries a `kind` that drives
-// real geometry (a dress flares, a hoodie has a hood, jeans colour the legs) —
-// a colour swap alone makes eight identical characters in eight paints.
+// A player picks a CHARACTER and a SKIN TONE. That is the whole picker.
+//
+// It used to be three pickers — hairstyle, outfit, build — and the result was
+// worse than the sum of its parts: every combination is reachable, so nothing
+// is designed, and a gallery of eight "presets" reads as one person in eight
+// wigs. Characters are drawn as whole people instead. The vocabulary below
+// still exists, but it is the palette the characters are DRAWN FROM, not a set
+// of axes the player is asked to operate.
+//
+// Skin tone stays separate on purpose. It is the one axis that is about the
+// player rather than the character, and every character has to be available in
+// every tone — that is the difference between choosing a look and being sorted
+// into one.
 
 export const SKIN_TONES = [
   { id: 'sk_1', label: 'Porcelain', hex: '#f7d7c4' },
@@ -17,8 +27,10 @@ export const SKIN_TONES = [
 
 /**
  * `kind` selects the geometry in the renderer. `color` ships with the style so
- * the gallery reads as eight different people rather than one person in eight
- * wigs.
+ * the cast reads as different people rather than one person in eight wigs.
+ *
+ * Not user-facing: a character names one of these, and the player never sees
+ * this list.
  */
 export const HAIRSTYLES = [
   { id: 'h_long', label: 'Long', kind: 'long', color: '#2b2320' },
@@ -31,6 +43,7 @@ export const HAIRSTYLES = [
   { id: 'h_beard', label: 'Beard', kind: 'beard', color: '#3b2b20' },
 ];
 
+/** `kind` drives real geometry — a dress flares, a hoodie has a hood. */
 export const OUTFITS = [
   { id: 'o_dress', label: 'Dress', kind: 'dress', primary: '#e8628c', secondary: '#fdf2f6' },
   { id: 'o_skirt', label: 'Top & skirt', kind: 'skirt', primary: '#fda4af', secondary: '#1e293b' },
@@ -43,51 +56,68 @@ export const OUTFITS = [
 ];
 
 /**
- * Build: the one axis that carries read-as-masculine / read-as-feminine, and it
- * is deliberately SEPARATE from hair and clothing. Tying a jaw to a haircut
- * would mean a player who wants long hair cannot have a broad face, and a
- * player in a blazer is forced into one. Two options, one row of buttons.
- *
- * It drives the silhouette (shoulder width, hem height, how much leg shows) and
- * the face (brow weight, blush, jaw).
+ * Build drives the silhouette (shoulder width, hem height, how much leg shows)
+ * and the face (brow weight, blush, jaw). Part of a character's design, not a
+ * dial: "physique" as a two-button row asked every player to categorise their
+ * own body before they could play, and answered nothing the character does not
+ * already say.
  */
 export const BUILDS = [
   { id: 'b_soft', label: 'Soft' },
   { id: 'b_broad', label: 'Broad' },
 ];
 
-export const DEFAULT_BUILD = BUILDS[0].id;
-export const DEFAULT_SKIN = SKIN_TONES[2].id;
-export const DEFAULT_HAIR = HAIRSTYLES[5].id;
-export const DEFAULT_OUTFIT = OUTFITS[5].id;
-
 /**
- * One-tap starting looks — four read feminine, four masculine, and between them
- * they use every hairstyle and every outfit exactly once. A player who does not
- * want to browse three pickers can still arrive with a character they like,
- * which is what keeps the zero-tap solo launch honest.
+ * The cast.
+ *
+ * DELIBERATELY UNNAMED. A name on a character is a claim the game cannot back
+ * up — it is not the player's character, it is one they were handed, and "Luna"
+ * in a Mongolian lobby is a translation problem for no gain. They are told
+ * apart by how they look, which is the point of drawing them differently.
+ *
+ * Between them they use every hairstyle and every outfit exactly once, so no
+ * two share a silhouette at portrait size — that is the bar for adding a ninth.
+ * `skin` is the tone the character is DRAWN in for the gallery; the player's
+ * own choice overrides it everywhere else.
  */
-export const PRESETS = [
-  { id: 'pr_1', label: 'Luna', skin: 'sk_1', hair: 'h_long', outfit: 'o_dress', build: 'b_soft' },
-  { id: 'pr_2', label: 'Saara', skin: 'sk_3', hair: 'h_pigtails', outfit: 'o_skirt', build: 'b_soft' },
-  { id: 'pr_3', label: 'Nomi', skin: 'sk_5', hair: 'h_curly', outfit: 'o_crop', build: 'b_soft' },
-  { id: 'pr_4', label: 'Enkhe', skin: 'sk_2', hair: 'h_bob', outfit: 'o_overalls', build: 'b_soft' },
-  { id: 'pr_5', label: 'Bat', skin: 'sk_3', hair: 'h_short', outfit: 'o_jeans', build: 'b_broad' },
-  { id: 'pr_6', label: 'Temu', skin: 'sk_4', hair: 'h_buzz', outfit: 'o_track', build: 'b_broad' },
-  { id: 'pr_7', label: 'Ganzo', skin: 'sk_6', hair: 'h_beard', outfit: 'o_hoodie', build: 'b_broad' },
-  { id: 'pr_8', label: 'Dorj', skin: 'sk_2', hair: 'h_ponytail', outfit: 'o_blazer', build: 'b_broad' },
+export const CHARACTERS = [
+  { id: 'ch_1', hair: 'h_long', outfit: 'o_dress', build: 'b_soft', skin: 'sk_1' },
+  { id: 'ch_2', hair: 'h_pigtails', outfit: 'o_skirt', build: 'b_soft', skin: 'sk_3' },
+  { id: 'ch_3', hair: 'h_curly', outfit: 'o_crop', build: 'b_soft', skin: 'sk_5' },
+  { id: 'ch_4', hair: 'h_bob', outfit: 'o_overalls', build: 'b_soft', skin: 'sk_2' },
+  { id: 'ch_5', hair: 'h_short', outfit: 'o_jeans', build: 'b_broad', skin: 'sk_3' },
+  { id: 'ch_6', hair: 'h_buzz', outfit: 'o_track', build: 'b_broad', skin: 'sk_4' },
+  { id: 'ch_7', hair: 'h_beard', outfit: 'o_hoodie', build: 'b_broad', skin: 'sk_6' },
+  { id: 'ch_8', hair: 'h_ponytail', outfit: 'o_blazer', build: 'b_broad', skin: 'sk_2' },
 ];
 
+export const DEFAULT_CHARACTER = CHARACTERS[4].id;
+export const DEFAULT_SKIN = SKIN_TONES[2].id;
+
 const SKIN_IDS = new Set(SKIN_TONES.map((s) => s.id));
-const HAIR_IDS = new Set(HAIRSTYLES.map((h) => h.id));
-const OUTFIT_IDS = new Set(OUTFITS.map((o) => o.id));
-const BUILD_IDS = new Set(BUILDS.map((b) => b.id));
+const CHARACTER_IDS = new Set(CHARACTERS.map((c) => c.id));
 
 export const isSkin = (id) => SKIN_IDS.has(id);
-export const isHair = (id) => HAIR_IDS.has(id);
-export const isOutfit = (id) => OUTFIT_IDS.has(id);
-export const isBuild = (id) => BUILD_IDS.has(id);
+export const isCharacter = (id) => CHARACTER_IDS.has(id);
 
 export const getSkin = (id) => SKIN_TONES.find((s) => s.id === id) ?? SKIN_TONES[2];
 export const getHair = (id) => HAIRSTYLES.find((h) => h.id === id) ?? HAIRSTYLES[5];
 export const getOutfit = (id) => OUTFITS.find((o) => o.id === id) ?? OUTFITS[5];
+export const getCharacter = (id) => CHARACTERS.find((c) => c.id === id) ?? CHARACTERS[4];
+
+/**
+ * The three render fields a character resolves to.
+ *
+ * This is the seam that lets the picker change without touching a renderer. The
+ * chibi, the portraits, the arenas and the flat SVG all still take
+ * {skin, build, hair, outfit} — they draw a person and have no opinion about
+ * how one was chosen. The server resolves this once, when identity is set, so
+ * what goes out on the snapshot is still a fully described look.
+ */
+export const characterDesign = (id) => {
+  const c = getCharacter(id);
+  return { build: c.build, hair: c.hair, outfit: c.outfit };
+};
+
+/** A character as it is drawn in the gallery: its own design, in its own tone. */
+export const characterLook = (id) => ({ ...characterDesign(id), skin: getCharacter(id).skin });

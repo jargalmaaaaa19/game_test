@@ -221,6 +221,7 @@ export class Room {
         return {
           id: p.id,
           name: p.name,
+          character: p.character,
           skin: p.skin,
           build: p.build,
           hair: p.hair,

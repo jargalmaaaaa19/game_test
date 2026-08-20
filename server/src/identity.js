@@ -1,12 +1,9 @@
 import { ERROR, NAME_MAX_LENGTH } from '../../shared/constants.js';
 import {
-  DEFAULT_BUILD,
-  DEFAULT_HAIR,
-  DEFAULT_OUTFIT,
+  DEFAULT_CHARACTER,
   DEFAULT_SKIN,
-  isBuild,
-  isHair,
-  isOutfit,
+  characterDesign,
+  isCharacter,
   isSkin,
 } from '../../shared/avatars.js';
 import { DEFAULT_COUNTRY, isCountry } from '../../shared/countries.js';
@@ -55,25 +52,22 @@ export function validateIdentity(patch) {
     out.skin = patch.skin;
   }
 
-  if (patch.build !== undefined) {
-    if (!isBuild(patch.build)) {
-      return { ok: false, code: ERROR.INVALID_INPUT, message: `unknown build: ${patch.build}` };
+  // A character is chosen whole, and RESOLVED here rather than on the client.
+  // Hairstyle, outfit and build are no longer things a client may ask for: they
+  // are what the character is, so a payload that sets them individually is an
+  // old client rather than a supported one. Resolving server-side is also what
+  // keeps every renderer working unchanged — what goes out on the snapshot is
+  // still a fully described look.
+  if (patch.character !== undefined) {
+    if (!isCharacter(patch.character)) {
+      return {
+        ok: false,
+        code: ERROR.INVALID_INPUT,
+        message: `unknown character: ${patch.character}`,
+      };
     }
-    out.build = patch.build;
-  }
-
-  if (patch.hair !== undefined) {
-    if (!isHair(patch.hair)) {
-      return { ok: false, code: ERROR.INVALID_INPUT, message: `unknown hairstyle: ${patch.hair}` };
-    }
-    out.hair = patch.hair;
-  }
-
-  if (patch.outfit !== undefined) {
-    if (!isOutfit(patch.outfit)) {
-      return { ok: false, code: ERROR.INVALID_INPUT, message: `unknown outfit: ${patch.outfit}` };
-    }
-    out.outfit = patch.outfit;
+    out.character = patch.character;
+    Object.assign(out, characterDesign(patch.character));
   }
 
   if (patch.country !== undefined) {
@@ -117,10 +111,9 @@ export function defaultIdentity(room, name) {
 
   return {
     name: sanitizeName(name),
+    character: DEFAULT_CHARACTER,
     skin: DEFAULT_SKIN,
-    build: DEFAULT_BUILD,
-    hair: DEFAULT_HAIR,
-    outfit: DEFAULT_OUTFIT,
+    ...characterDesign(DEFAULT_CHARACTER),
     country,
   };
 }

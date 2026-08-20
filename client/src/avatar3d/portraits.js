@@ -10,6 +10,22 @@ const CACHE = new Map(); // key -> data URL
 const PENDING = new Map(); // key -> Promise, so ten cards asking at once render once
 const SIZE = 192;
 
+// ONE look is in the scene at a time, and this is why.
+//
+// There is a single offscreen scene, and `renderPortrait` is async: it builds a
+// character, waits for shaders, renders, and only then disposes it. Eight cards
+// asking for eight different looks at once therefore put EIGHT characters in
+// that one scene simultaneously, and every `toDataURL` captured the same pile —
+// so a gallery of eight distinct characters came back as eight copies of one
+// picture. `PENDING` never caught it: it dedupes by key, and these are eight
+// different keys. The fix is a queue, not a cache.
+let queue = Promise.resolve();
+const enqueue = (job) => {
+  const run = queue.then(job, job);
+  queue = run.then(() => {}, () => {});
+  return run;
+};
+
 let engine = null;
 let scene = null;
 let failed = false;
@@ -69,7 +85,7 @@ export function renderPortrait(look) {
   if (!ensureEngine()) return Promise.resolve(null);
 
   const B = babylon();
-  const job = (async () => {
+  const job = enqueue(async () => {
     let root = null;
     try {
       root = buildChibi(B, scene, look);
@@ -92,7 +108,7 @@ export function renderPortrait(look) {
       root?.dispose(false, true);
       PENDING.delete(key);
     }
-  })();
+  });
 
   PENDING.set(key, job);
   return job;

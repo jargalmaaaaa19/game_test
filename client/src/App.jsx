@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { PHASE } from '@shared/constants.js';
-import { DEFAULT_BUILD, DEFAULT_HAIR, DEFAULT_OUTFIT, DEFAULT_SKIN } from '@shared/avatars.js';
+import { DEFAULT_CHARACTER, DEFAULT_SKIN } from '@shared/avatars.js';
 import { DEFAULT_COUNTRY } from '@shared/countries.js';
 import { t, errorText } from './i18n.js';
 import { SERVER_URL, useRoomSocket } from './net/useRoomSocket.js';
@@ -29,10 +29,8 @@ const LOOK_KEY = 'usion-olympics:look';
 
 const DEFAULT_LOOK = {
   name: '',
+  character: DEFAULT_CHARACTER,
   skin: DEFAULT_SKIN,
-  build: DEFAULT_BUILD,
-  hair: DEFAULT_HAIR,
-  outfit: DEFAULT_OUTFIT,
   country: DEFAULT_COUNTRY,
 };
 
@@ -91,10 +89,8 @@ export default function App({ hostConfig }) {
     pushTimer.current = setTimeout(() => {
       updateIdentity({
         name: look.name || undefined,
+        character: look.character,
         skin: look.skin,
-        build: look.build,
-        hair: look.hair,
-        outfit: look.outfit,
         country: look.country,
       });
     }, 250);
