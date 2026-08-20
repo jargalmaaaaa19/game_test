@@ -13,14 +13,18 @@ import { BUILDS, getHair, getOutfit, getSkin } from '../../../shared/avatars.js'
 
 export const PROPORTIONS = {
   totalHeight: 2.1,
-  headRadius: 0.58,
-  headY: 1.52,
-  cameraTargetY: 1.14,
+  // A rounder, heavier head than a "big head" already implies. The reference
+  // silhouette is an egg on two stubs: the head is the character and the body
+  // is what carries it, so every extra millimetre of skull buys more than any
+  // detail below the neck does.
+  headRadius: 0.64,
+  headY: 1.56,
+  cameraTargetY: 1.2,
 };
 
 // The torso block. Every hem, collar and shoulder is derived from these, so
 // they can never drift apart when one outfit changes shape.
-const BODY = { height: 0.78, centerY: 0.72, top: 1.11, bottom: 0.33 };
+const BODY = { height: 0.72, centerY: 0.71, top: 1.07, bottom: 0.35 };
 
 // Where a leg swings from, where the head turns on, and where the arms hang in
 // the neutral pose the portraits use. An animator eases back to these rather
@@ -74,6 +78,123 @@ function envDataUrl() {
   blob(300, 226, 90, 'rgba(255, 226, 190, 0.35)'); // warm floor bounce
 
   return c.toDataURL('image/png');
+}
+
+/**
+ * The face, PAINTED into the head's own texture instead of modelled.
+ *
+ * Everything expressive about a chibi face is fine detail — a lash line, a
+ * catchlight, the soft edge of a blush — and fine detail is what primitives are
+ * worst at. Modelled, an eye highlight is a white sphere poking out of a black
+ * sphere; painted, it is two strokes and it reads correctly at 40px.
+ *
+ * It goes on the head sphere's own UVs, so it curves with the skull, shades
+ * with the scene lighting and holds up when the athlete turns — which a flat
+ * decal plane in front of the face would not. The front of the head is u=0.25
+ * (the camera sits on -Z); v=0.5 is the equator, and the eye line is just above
+ * it.
+ *
+ * The skin tone is the BACKGROUND of this texture rather than a tint over it,
+ * so a player's tone choice still drives the whole head.
+ */
+function faceTexture(B, scene, skinHex, hairHex, broad) {
+  // Cached per scene, per (tone, hair, build). A 1024x512 texture per athlete
+  // is ~2MB, and ten athletes on a track would be twenty — for what is usually
+  // three or four distinct faces. The scene owns the cache so disposing the
+  // scene disposes them.
+  const key = `${skinHex}|${hairHex}|${broad}`;
+  const cache = (scene._chibiFaces ??= new Map());
+  const hit = cache.get(key);
+  if (hit) return hit;
+
+  const W = 1024;
+  const H = 512;
+  const tex = new B.DynamicTexture(`face_${key}`, { width: W, height: H }, scene, true);
+  const c = tex.getContext();
+
+  c.fillStyle = skinHex;
+  c.fillRect(0, 0, W, H);
+
+  const CX = W * 0.25; // dead centre of the face
+  const eyeY = 246;
+  const dx = 66; // eye centres, either side of the nose
+  const rx = broad ? 30 : 33;
+  const ry = broad ? 38 : 45;
+
+  for (const side of [-1, 1]) {
+    const ex = CX + side * dx;
+
+    // Lash line: a soft dark cap over the top of the eye. On a broad face it
+    // is heavier and flatter, which is most of what reads as a older/male brow.
+    c.save();
+    c.beginPath();
+    c.ellipse(ex, eyeY, rx, ry, 0, 0, Math.PI * 2);
+    c.clip();
+
+    const iris = c.createRadialGradient(ex - rx * 0.2, eyeY - ry * 0.25, rx * 0.15, ex, eyeY, rx * 1.25);
+    iris.addColorStop(0, '#5b4034');
+    iris.addColorStop(0.55, '#2a1c18');
+    iris.addColorStop(1, '#140d0c');
+    c.fillStyle = iris;
+    c.fillRect(ex - rx, eyeY - ry, rx * 2, ry * 2);
+
+    c.fillStyle = 'rgba(10,6,6,0.9)';
+    c.beginPath();
+    c.ellipse(ex, eyeY - ry * 0.82, rx * 1.15, ry * 0.42, 0, 0, Math.PI * 2);
+    c.fill();
+    c.restore();
+
+    // Two catchlights. A big soft one from the key, a small hard one from the
+    // rim — one highlight is a shiny bead, two is an eye.
+    c.fillStyle = 'rgba(255,255,255,0.97)';
+    c.beginPath();
+    c.ellipse(ex - side * rx * 0.3, eyeY - ry * 0.34, rx * 0.34, ry * 0.28, -0.4 * side, 0, Math.PI * 2);
+    c.fill();
+    c.fillStyle = 'rgba(255,255,255,0.72)';
+    c.beginPath();
+    c.ellipse(ex + side * rx * 0.36, eyeY + ry * 0.36, rx * 0.16, ry * 0.13, 0, 0, Math.PI * 2);
+    c.fill();
+
+    // Brow, in the hair colour: thin and arched, or thick and level.
+    c.strokeStyle = hairHex;
+    c.lineCap = 'round';
+    c.lineWidth = broad ? 15 : 10;
+    c.beginPath();
+    // Close above the eye, because the hairline is lower than it looks in UV
+    // space: drawn where a brow "should" go, it renders underneath the fringe
+    // and the face loses its whole top half of expression.
+    if (broad) {
+      c.moveTo(ex - 34, eyeY - ry - 6);
+      c.lineTo(ex + 34, eyeY - ry - 11);
+    } else {
+      c.moveTo(ex - 31, eyeY - ry - 7);
+      c.quadraticCurveTo(ex, eyeY - ry - 23, ex + 31, eyeY - ry - 10);
+    }
+    c.stroke();
+
+    // Blush. A flush under the eye, not a sticker on the cheek.
+    if (!broad) {
+      const b = c.createRadialGradient(CX + side * 132, 300, 4, CX + side * 132, 300, 56);
+      b.addColorStop(0, 'rgba(242,117,138,0.5)');
+      b.addColorStop(1, 'rgba(242,117,138,0)');
+      c.fillStyle = b;
+      c.fillRect(CX + side * 132 - 60, 240, 120, 120);
+    }
+  }
+
+  // A small smile. The modelled version was a sphere and read as a wound.
+  c.strokeStyle = '#8c3038';
+  c.lineWidth = broad ? 9 : 10;
+  c.lineCap = 'round';
+  c.beginPath();
+  const my = broad ? 330 : 322;
+  c.moveTo(CX - 24, my);
+  c.quadraticCurveTo(CX, my + (broad ? 14 : 18), CX + 24, my);
+  c.stroke();
+
+  tex.update(false);
+  cache.set(key, tex);
+  return tex;
 }
 
 /**
@@ -158,10 +279,17 @@ export function buildChibi(B, scene, look) {
 
   ensureEnvironment(B, scene);
 
+  const broadBuild = (look.build ?? BUILDS[0].id) === 'b_broad';
+
   const mats = {
     // Skin is soft but not chalk: a little sheen is what stops a cheek reading
     // as felt.
     skin: surface(B, scene, skinTone.hex, { roughness: 0.6, sheen: 0.05 }),
+    head: (() => {
+      const m = surface(B, scene, '#ffffff', { roughness: 0.6, sheen: 0.05 });
+      m.albedoTexture = faceTexture(B, scene, skinTone.hex, hairStyle.color, broadBuild);
+      return m;
+    })(),
     hair: surface(B, scene, hairStyle.color, { roughness: 0.52, sheen: 0.14 }),
     primary: surface(B, scene, outfitStyle.primary, { roughness: 0.82, sheen: 0.06 }),
     secondary: surface(B, scene, outfitStyle.secondary, { roughness: 0.82, sheen: 0.06 }),
@@ -219,7 +347,7 @@ export function buildChibi(B, scene, look) {
   // A broad build widens the shoulders, straightens the taper, lifts the hem
   // and shows more leg — the same outfit cut for a different frame. Without it
   // every character is the same rounded tube and menswear reads as a tunic.
-  const broad = (look.build ?? BUILDS[0].id) === 'b_broad';
+  const broad = broadBuild;
 
   const legs = buildOutfit(B, scene, under(upper), mats, outfitStyle, broad);
   const hips = buildLegsAndShoes(B, scene, add, mats, legs, broad, root);
@@ -406,7 +534,7 @@ function buildLegsAndShoes(B, scene, add, mats, legs, broad, root) {
   // broad build wears a higher hem, so its legs are a touch thicker to match.
   const height = legs.long ? 0.44 : 0.32;
   const centerY = legs.long ? 0.3 : 0.26;
-  const radius = broad ? 0.15 : 0.135;
+  const radius = broad ? 0.17 : 0.155;
   const hips = {};
 
   for (const side of [-1, 1]) {
@@ -425,7 +553,7 @@ function buildLegsAndShoes(B, scene, add, mats, legs, broad, root) {
     });
     // White trainers: the UI behind these characters is near-black, and a dark
     // shoe on a dark card amputates the feet.
-    add(B.MeshBuilder.CreateSphere(`shoe${side}`, { diameter: broad ? 0.38 : 0.35, segments: 14 }, scene), mats.shoe, {
+    add(B.MeshBuilder.CreateSphere(`shoe${side}`, { diameter: broad ? 0.44 : 0.41, segments: 16 }, scene), mats.shoe, {
       parent: hip,
       pos: [0, 0.1 - HIP_Y, FRONT * 0.06],
       scale: [1, 0.58, 1.45],
@@ -453,19 +581,19 @@ function buildArms(B, scene, root, mats, outfit, broad) {
     // hanging at the hip where it just looks like a stump.
     shoulder.rotation.set(0.92, 0, side * -0.05);
 
-    const arm = B.MeshBuilder.CreateCapsule(`arm${side}`, { height: 0.42, radius: broad ? 0.11 : 0.095 }, scene);
+    const arm = B.MeshBuilder.CreateCapsule(`arm${side}`, { height: 0.38, radius: broad ? 0.125 : 0.112 }, scene);
     arm.material = mats.skin;
     arm.parent = shoulder;
     arm.position.set(0, -0.2, 0);
 
     if (sleeved) {
-      const sleeve = B.MeshBuilder.CreateCapsule(`sleeve${side}`, { height: 0.3, radius: 0.11 }, scene);
+      const sleeve = B.MeshBuilder.CreateCapsule(`sleeve${side}`, { height: 0.28, radius: 0.128 }, scene);
       sleeve.material = outfit.kind === 'blazer' ? mats.primary : mats.primaryDark;
       sleeve.parent = shoulder;
       sleeve.position.set(0, -0.13, 0);
     } else {
       // Bare shoulder still needs a cap, or the arm and body show a seam.
-      const cap = B.MeshBuilder.CreateSphere(`shoulderCap${side}`, { diameter: 0.26, segments: 14 }, scene);
+      const cap = B.MeshBuilder.CreateSphere(`shoulderCap${side}`, { diameter: 0.29, segments: 16 }, scene);
       cap.material = mats.skin;
       cap.parent = shoulder;
       cap.position.set(0, -0.03, 0);
@@ -473,7 +601,7 @@ function buildArms(B, scene, root, mats, outfit, broad) {
 
     // The hand sits AT the arm's tip, still wide enough to swallow the wrist —
     // shrink it much past the arm's own radius and the joint reappears.
-    const hand = B.MeshBuilder.CreateSphere(`hand${side}`, { diameter: 0.215, segments: 14 }, scene);
+    const hand = B.MeshBuilder.CreateSphere(`hand${side}`, { diameter: 0.235, segments: 16 }, scene);
     hand.material = mats.skin;
     hand.parent = shoulder;
     hand.position.set(0, -0.4, 0);
@@ -484,77 +612,35 @@ function buildArms(B, scene, root, mats, outfit, broad) {
 
 function buildHead(B, scene, add, mats, broad, hairColor) {
   const headY = PROPORTIONS.headY;
-  const faceZ = FRONT * 0.53;
-  const eyeY = headY + 0.03;
+  // Every offset below was measured against a 0.58 skull. Scaling them by K
+  // rather than re-typing them is what lets the head size be a dial: set the
+  // radius, and the eyes, brows and mouth stay where they were put. Grow the
+  // head without this and the whole face sinks inside it.
+  const K = PROPORTIONS.headRadius / 0.58;
+  const faceZ = FRONT * 0.53 * K;
+  const eyeY = headY + 0.03 * K;
   const brow = matte(B, scene, hairColor);
 
   // A broad face is a fraction wider and shorter — the squarer skull does more
   // work than any single feature.
   add(
-    B.MeshBuilder.CreateSphere('head', { diameter: PROPORTIONS.headRadius * 2, segments: 28 }, scene),
-    mats.skin,
-    { pos: [0, headY, 0], scale: broad ? [1.04, 0.92, 0.94] : [1, 0.96, 0.94] },
+    B.MeshBuilder.CreateSphere('head', { diameter: PROPORTIONS.headRadius * 2, segments: 40 }, scene),
+    mats.head,
+    { pos: [0, headY, 0], scale: broad ? [1.03, 0.97, 0.97] : [1, 1.01, 0.98] },
   );
 
   if (broad) {
     // Squarer jaw: a flattened block under the cheeks, in skin, so the chin
     // stops being a ball.
-    add(B.MeshBuilder.CreateSphere('jaw', { diameter: 0.86, segments: 18 }, scene), mats.skin, {
-      pos: [0, headY - 0.24, FRONT * 0.04],
+    add(B.MeshBuilder.CreateSphere('jaw', { diameter: 0.86 * K, segments: 18 }, scene), mats.skin, {
+      pos: [0, headY - 0.24 * K, FRONT * 0.04 * K],
       scale: [1.02, 0.52, 0.94],
     });
   }
 
-  for (const side of [-1, 1]) {
-    // Big and well separated: on a 40px lobby card the eyes ARE the character.
-    // A broad build narrows them slightly — round and tall reads young/soft.
-    // Bigger than looks sensible in a wireframe, because a chibi face IS its
-    // eyes — and the glossier they are the more alive they read. Two highlights
-    // rather than one: a big soft catchlight from the key, and a small hard one
-    // from the rim. One highlight is a shiny bead; two is an eye.
-    add(B.MeshBuilder.CreateSphere(`eye${side}`, { diameter: 0.28, segments: 20 }, scene), mats.ink, {
-      pos: [side * 0.225, eyeY, faceZ],
-      scale: broad ? [0.82, 0.92, 0.38] : [0.86, 1.12, 0.4],
-    });
-    add(B.MeshBuilder.CreateSphere(`glint${side}`, { diameter: 0.105, segments: 12 }, scene), mats.white, {
-      pos: [side * 0.265, eyeY + 0.055, faceZ - 0.035],
-      scale: [1, 1, 0.3],
-    });
-    add(B.MeshBuilder.CreateSphere(`glintB${side}`, { diameter: 0.05, segments: 10 }, scene), mats.white, {
-      pos: [side * 0.185, eyeY - 0.055, faceZ - 0.03],
-      scale: [1, 1, 0.3],
-    });
-
-    // Brows in the hair colour. Thick, low and level for broad; thin, high and
-    // arched for soft. This is the cheapest, strongest gender read on a face
-    // with no nose.
-    add(
-      B.MeshBuilder.CreateCapsule(`brow${side}`, {
-        height: broad ? 0.24 : 0.19,
-        radius: broad ? 0.036 : 0.022,
-      }, scene),
-      brow,
-      {
-        pos: [side * 0.22, eyeY + (broad ? 0.15 : 0.19), faceZ - 0.01],
-        rot: [0, 0, Math.PI / 2 + side * (broad ? 0.08 : -0.16)],
-        scale: [1, 1, 0.5],
-      },
-    );
-
-    // Blush — the single biggest "cute" lever, and it costs two spheres. A
-    // broad build gets none: rosy cheeks undo everything above.
-    if (!broad) {
-      add(B.MeshBuilder.CreateSphere(`blush${side}`, { diameter: 0.2, segments: 12 }, scene), mats.blush, {
-        pos: [side * 0.375, headY - 0.12, FRONT * 0.43],
-        scale: [1.05, 0.58, 0.28],
-      });
-    }
-  }
-
-  add(B.MeshBuilder.CreateSphere('mouth', { diameter: 0.2, segments: 14 }, scene), mats.mouth, {
-    pos: [0, headY - (broad ? 0.23 : 0.21), faceZ + FRONT * 0.01],
-    scale: broad ? [0.62, 0.26, 0.26] : [0.7, 0.4, 0.28],
-  });
+  // The eyes, brows, blush and mouth are PAINTED — see `faceTexture`. They
+  // were eleven primitives poking out of a skull, which is the wrong tool for
+  // a lash line and a catchlight.
 }
 
 // ---------------------------------------------------------------------------
@@ -582,8 +668,14 @@ function buildHair(B, scene, add, mats, style, broad) {
       },
     );
 
+  // Same trick as the face: these were placed against a 0.58 skull, so they
+  // scale about the head's centre rather than being re-measured.
+  const K = R / 0.58;
   const blob = (name, diameter, pos, scale) =>
-    add(B.MeshBuilder.CreateSphere(name, { diameter, segments: 14 }, scene), mats.hair, { pos, scale });
+    add(B.MeshBuilder.CreateSphere(name, { diameter: diameter * K, segments: 14 }, scene), mats.hair, {
+      pos: [pos[0] * K, headY + (pos[1] - headY) * K, pos[2] * K],
+      scale,
+    });
 
   switch (style.kind) {
     case 'long':
@@ -666,15 +758,15 @@ export function setupStage(B, scene, canvas, { interactive = false } = {}) {
     'cam',
     -Math.PI / 2,
     Math.PI / 2.35,
-    3.75,
+    4.15,
     new B.Vector3(0, PROPORTIONS.cameraTargetY, 0),
     scene,
   );
   camera.fov = 0.62;
   if (interactive) {
     camera.attachControl(canvas, true);
-    camera.lowerRadiusLimit = 2.8;
-    camera.upperRadiusLimit = 5.5;
+    camera.lowerRadiusLimit = 3.1;
+    camera.upperRadiusLimit = 6;
     camera.lowerBetaLimit = 0.9;
     camera.upperBetaLimit = Math.PI / 2 + 0.15;
     camera.panningSensibility = 0; // dragging must orbit, never pan the athlete off-screen
