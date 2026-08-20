@@ -2,53 +2,58 @@
 //
 // PURE: no DOM, no Node, no Math.random(), no Date.now(). The server runs this
 // as the authority; the client runs the SAME module to draw the run-up, the
-// angle dial and the flight, so what the player sees is what the server
+// timing gauge and the flight, so what the player sees is what the server
 // measures.
 //
-// Four stages per attempt, three attempts each, best jump counts:
+// ONE decision per attempt, three attempts each, best jump counts:
 //   RUN     alternate left/right thumbs down the runway, exactly as the sprint
-//   TAKEOFF press and HOLD to plant the foot — where you plant it is the skill
-//   ANGLE   the dial sweeps 0°..90°; release it at about 45°
+//   JUMP    hit the button as the white line arrives
 //   FLIGHT  the arc, held on the clock so every client draws the same jump
 //
-// Distance is plain projectile range, so 45° really is optimal rather than
-// merely asserted. Measurement starts at the BOARD, not at the foot, so taking
-// off early costs exactly the gap you left behind — which is what makes "right
-// on the line" the whole point.
+// There is no angle to pick. Every jump leaves the board at 45° — the optimal
+// launch — so the whole event is WHERE you were standing when you pressed:
 //
-// THERE ARE NO FOULS. Stepping over the board is a mistake you pay for in
-// metres, not an attempt struck off: an arcade event that answers a mistimed
-// press with a zero and a shrug spends a third of the player's game teaching
-// nothing. Past the board the overshoot is docked at OVERSTEP_FACTOR, which is
-// steep enough that reaching for the line never beats hitting it.
+//   GREEN  the last half-metre into the line: the full speed you built
+//   ORANGE the approach: three quarters of it, which costs about half the jump
+//   RED    over the line: the attempt is gone
+//
+// Distance is plain projectile range off that fixed angle, so a jump is worth
+// exactly the speed that went into it and nothing else. No gap arithmetic: the
+// zone you pressed in IS the score, which is what makes a gauge a fair way to
+// show it.
 
 export const ATTEMPTS = 3;
-export const RUNWAY_M = 38; // board sits at this mark
-export const RUNOUT_M = 4; // sand past it; run this far and the attempt is spent
+export const RUNWAY_M = 38; // the white line sits at this mark
+export const RUNOUT_M = 3; // sand past it; run this far and the attempt is gone
 export const COUNTDOWN_MS = 2_500;
 export const MAX_ROUND_MS = 50_000;
 
-export const ANGLE_PERIOD_MS = 1_400; // 700ms up, 700ms back down
-export const MAX_ANGLE_DEG = 90;
-export const IDEAL_ANGLE_DEG = 45;
-// A dial held forever would park an athlete on the board for the rest of the
-// round. Three sweeps is long enough to pick an angle and short enough that a
-// player who put the phone down still gets a jump on the board.
-export const MAX_HOLD_MS = ANGLE_PERIOD_MS * 3;
+/** Fixed, and not a choice: 45° is the optimal launch and every jump gets it. */
+export const JUMP_ANGLE_DEG = 45;
 
-// The window BEFORE the board that counts as perfect — on the line, or a
-// boot's length short of it.
-export const PERFECT_M = 0.4;
-export const PERFECT_BONUS = 1.06; // what nailing it is worth
-export const OVERSTEP_FACTOR = 2.4; // metres docked per metre past the board
+// The timing gauge, in metres before the line. The button wakes at GAUGE_M and
+// the green band is the last stride into the line.
+//
+// GREEN IS SIZED IN MILLISECONDS, not metres. At the 10.5 m/s ceiling a band
+// this wide is about 105ms of running, which is roughly one server tick plus a
+// phone's worth of latency — the smallest window a player can actually aim at
+// over a network. Half a metre looked tidier and was unhittable: it was under
+// one tick, so whether you got green came down to which frame your press
+// happened to land in.
+export const GAUGE_M = 4.5;
+export const PERFECT_M = 1.1;
+// A gauge needs somewhere to show red, so the line is not a wall: cross it and
+// you have RUNOUT_M to press (and fail) or run into the sand (and fail).
+export const GOOD_FACTOR = 0.75; // orange takes three quarters of your speed
 
 // The arc plus a beat in the sand, held so the camera has something to watch
-// and every phone in the room draws the same jump at the same moment.
+// and every phone in the room draws the same jump at the same moment. A foul
+// gets the same window — the athlete has to be seen blowing it.
 export const FLIGHT_MS = 1_600;
 export const ARC_FRACTION = 0.62; // of FLIGHT_MS spent in the air
 
-// Jump kinds, on the wire and in the record.
-export const KIND = { PLAIN: 0, PERFECT: 1, OVERSTEP: 2, NO_JUMP: 3 };
+/** How an attempt ended. Also the wire value, and the colour of the gauge. */
+export const KIND = { PERFECT: 0, GOOD: 1, FOUL: 2 };
 
 // A run-up tap closer than this is a key repeating, not a stride.
 export const MIN_STEP_INTERVAL_MS = 45;
@@ -63,73 +68,67 @@ const G = 13; // tuned, not Earth's: puts a perfect jump at ~8.5m
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
-function triangle(elapsed, period) {
-  const x = ((elapsed % period) + period) % period / period;
-  return x < 0.5 ? x * 2 : 2 - x * 2; // 0..1..0
-}
-
-/** Where the angle dial reads right now, in degrees. */
-export const angleAt = (athlete, now) =>
-  triangle(now - athlete.holdAt, ANGLE_PERIOD_MS) * MAX_ANGLE_DEG;
+const BAND_EPS = 1e-6; // see `zoneAt`
 
 /**
- * Metres between the take-off foot and the board. Positive is short of it,
- * negative is over it — one signed number, so every rule below reads as a
- * single comparison instead of a pair of branches.
- */
-export const boardGap = (takeoffX) => RUNWAY_M - takeoffX;
-
-/** True for a take-off on the line, or a boot's length before it. */
-export const isPerfect = (gap) => gap >= 0 && gap <= PERFECT_M;
-
-/**
- * What the gap costs, in metres off the tape. Short of the board you lose the
- * runway you left unused, which is simply where the measurement starts. Past
- * it you lose considerably more than the overshoot gained you, or stepping
- * over would be the optimal play and the board would stop meaning anything.
- */
-export const gapPenalty = (gap) => (gap >= 0 ? gap : -gap * OVERSTEP_FACTOR);
-
-/** How far the athlete physically travels through the air. */
-export function flightRange(speed, angleDeg) {
-  const rad = (clamp(angleDeg, 0, MAX_ANGLE_DEG) * Math.PI) / 180;
-  return (speed * speed * Math.sin(2 * rad)) / G;
-}
-
-/**
- * Measured distance for one jump — what goes on the scoreboard.
+ * Which band of the gauge the athlete is standing in.
  *
- * @param {number} speed    m/s at take-off
- * @param {number} angleDeg launch angle
- * @param {number} gap      metres from the take-off foot to the board, signed
+ * 'early' is before the gauge wakes up, and is the one state that is not a
+ * jump: the button does not exist yet on the client, and a press that arrives
+ * anyway is ignored rather than scored. Without that, a modded client could
+ * press from the top of the runway and collect the orange jump for free — the
+ * score no longer subtracts the gap, so distance-to-the-line has to be gated
+ * somewhere, and it is gated here.
  */
-export function jumpDistance(speed, angleDeg, gap) {
-  const range = flightRange(speed, angleDeg) * (isPerfect(gap) ? PERFECT_BONUS : 1);
-  return Math.max(0, range - gapPenalty(gap));
+export function zoneAt(x) {
+  const gap = RUNWAY_M - x;
+  if (gap < 0) return 'foul';
+  // The edges are inclusive to within a rounding error, and deliberately so:
+  // `38 - 1.1` does not give back exactly 1.1, so an athlete standing exactly
+  // on the edge of green tested as orange. A band a player can see themselves
+  // entering must not turn on a float's last bit.
+  if (gap <= PERFECT_M + BAND_EPS) return 'perfect';
+  if (gap <= GAUGE_M + BAND_EPS) return 'good';
+  return 'early';
+}
+
+const KIND_OF = { perfect: KIND.PERFECT, good: KIND.GOOD, foul: KIND.FOUL };
+
+/**
+ * How far a jump travels. Range off a fixed 45° is simply v²/G, and orange
+ * spends three quarters of the speed — which, because range goes as the SQUARE
+ * of it, lands at a little over half the distance. That gap is the whole
+ * reward for hitting green.
+ */
+export function jumpDistance(speed, kind) {
+  if (kind === KIND.FOUL) return 0;
+  const v = Math.max(0, kind === KIND.GOOD ? speed * GOOD_FACTOR : speed);
+  return (v * v) / G;
 }
 
 /**
  * Where a jump in progress is right now.
  *
- * Takes the wire form of the flight — `[until, fromX, range, distance, angle,
- * kind]`, exactly as `snapshot` sends it — and returns {x, y, air, landed}:
- * metres down the runway, metres off the ground, how high through the arc
- * (0..1..0), and how far through the settle in the sand.
+ * Takes the wire form of the flight — `[until, fromX, range, distance, kind]`,
+ * exactly as `snapshot` sends it — and returns {x, y, air, landed}: metres down
+ * the runway, metres off the ground, how high through the arc (0..1..0), and
+ * how far through the settle in the sand.
  *
  * PURE, and shared by every renderer for the same reason the rest of this file
  * is: the 3D arena and the flat fallback drawing the same jump differently is
- * two implementations of one arc, and they drift.
+ * two implementations of one arc, and they drift. A foul has a range of zero,
+ * so this holds the athlete where they blew it — which is exactly what should
+ * be on screen.
  */
 export function flightPoint(flight, now) {
   if (!flight) return { x: 0, y: 0, air: 0, landed: 0 };
-  const [until, fromX, range, , angleDeg] = flight;
+  const [until, fromX, range] = flight;
   const p = clamp((FLIGHT_MS - (until - now)) / FLIGHT_MS, 0, 1);
   const u = clamp(p / ARC_FRACTION, 0, 1);
 
-  // Apex of a projectile whose range and launch angle are known: R·tanθ/4.
-  // Capped, because the dial reaches 90° and a jump straight up would put the
-  // athlete through the roof of the stadium.
-  const apex = Math.max(0.25, Math.min(range * 0.55 + 0.4, (range * Math.tan((angleDeg * Math.PI) / 180)) / 4));
+  // Apex of a projectile whose range is known and whose launch is 45°:
+  // R·tan(45°)/4, which is simply a quarter of the range.
+  const apex = range / 4;
 
   return {
     x: fromX + range * u,
@@ -148,49 +147,27 @@ function resetAttempt(a) {
   a.v = 0;
   a.foot = -1;
   a.lastStepAt = 0;
-  a.holdAt = 0;
-  a.takeoffX = 0;
   a.flightUntil = 0;
   a.flight = null;
 }
 
-function recordJump(a, jump) {
-  a.jumps.push(jump);
-  if (jump.distance > a.best) a.best = jump.distance;
-}
-
 /**
- * Turn a held take-off into a jump: measure it, file it, and hand the arc to
- * the clock. Shared by the player's own release and by the hold timing out, so
- * the two can never measure the same jump differently.
+ * Resolve an attempt: measure it, file it, and hand the arc to the clock.
+ * Shared by the player's own press and by running out of runway, so the two can
+ * never disagree about what a jump was worth.
  */
-function releaseJump(a, angle, now) {
-  const gap = boardGap(a.takeoffX);
-  const perfect = isPerfect(gap);
-  const range = flightRange(a.v, angle) * (perfect ? PERFECT_BONUS : 1);
-  const distance = Math.max(0, range - gapPenalty(gap));
-  const kind = perfect ? KIND.PERFECT : gap < 0 ? KIND.OVERSTEP : KIND.PLAIN;
-
-  recordJump(a, {
-    distance: Math.round(distance * 100) / 100,
-    angle: Math.round(angle),
-    speed: Math.round(a.v * 10) / 10,
-    kind,
-  });
+function resolveJump(a, kind, now) {
+  const distance = Math.round(jumpDistance(a.v, kind) * 100) / 100;
+  a.jumps.push({ distance, kind, speed: Math.round(a.v * 10) / 10 });
+  if (distance > a.best) a.best = distance;
 
   // The flight is drawn, not simulated: it is a formula, and the athlete has
   // already been measured. What the clock buys is a window in which every
   // client draws the SAME arc — without it the sim snaps the jumper back to the
-  // top of the runway on the tick they let go, and nobody ever sees the jump.
+  // top of the runway on the tick they press, and nobody ever sees the jump.
   a.stage = 'flight';
   a.flightUntil = now + FLIGHT_MS;
-  a.flight = {
-    fromX: Math.round(a.takeoffX * 100) / 100,
-    range: Math.round(range * 100) / 100,
-    distance: Math.round(distance * 100) / 100,
-    angle: Math.round(angle),
-    kind,
-  };
+  a.flight = { fromX: Math.round(a.x * 100) / 100, range: distance, distance, kind };
 }
 
 export default {
@@ -201,16 +178,14 @@ export default {
     for (const { playerId, lane } of seats) {
       athletes[playerId] = {
         lane,
-        stage: 'run', // 'run' -> 'takeoff' -> 'flight' -> 'run', or 'done'
+        stage: 'run', // 'run' -> 'flight' -> 'run', or 'done'
         x: 0,
         v: 0,
         foot: -1, // last thumb used: 0 left, 1 right, -1 none yet
         lastStepAt: 0,
-        holdAt: 0,
-        takeoffX: 0,
         flightUntil: 0,
         flight: null,
-        jumps: [], // { distance, angle, speed, kind }
+        jumps: [], // { distance, kind, speed }
         best: 0,
         lastTapAt: 0,
       };
@@ -219,16 +194,16 @@ export default {
   },
 
   /**
-   * Three payloads, and every one of them arrived off a phone:
+   * Two payloads, and both arrived off a phone:
    *
-   *   { f: 0 | 1 }              one stride, left thumb or right
-   *   { t: 'jump' }             plant the foot and start the dial
-   *   { t: 'release', v: deg }  let go, with the angle the player SAW
+   *   { f: 0 | 1 }   one stride, left thumb or right
+   *   { t: 'jump' }  the button, wherever the athlete happens to be standing
    *
-   * As in archery, the released angle is taken from the CLIENT and then bounded
-   * against this server's own reading of the same pure dial — sampling only on
-   * the server would charge every player their ping, and trusting the client
-   * outright would let a modded one release at exactly 45° every time.
+   * Nothing here trusts the sender for anything but the fact of the press. The
+   * zone is read from the server's own x, so a client cannot claim it was on
+   * the line when it was not — which is the whole reason the angle the old
+   * version took from the client had to be bounds-checked, and the reason this
+   * version has nothing to bounds-check at all.
    */
   applyInput(state, playerId, input, now) {
     const a = state.athletes[playerId];
@@ -261,25 +236,10 @@ export default {
       if (a.stage !== 'run') return;
       if (now - a.lastTapAt < 100) return;
       a.lastTapAt = now;
-      // Wherever the foot lands, it counts — over the board included. The
-      // arithmetic in `gapPenalty` is the only thing that judges it.
-      a.stage = 'takeoff';
-      a.holdAt = now;
-      a.takeoffX = a.x;
-      return;
-    }
 
-    if (input.t === 'release') {
-      if (a.stage !== 'takeoff') return;
-      const server = angleAt(a, now);
-      const reported = typeof input.v === 'number' && Number.isFinite(input.v) ? input.v : null;
-      // 250ms of dial travel is the tolerance: (250/700)*90 ≈ 32°.
-      const angle = clamp(
-        reported != null && Math.abs(reported - server) <= 32 ? reported : server,
-        0,
-        MAX_ANGLE_DEG,
-      );
-      releaseJump(a, angle, now);
+      const zone = zoneAt(a.x);
+      if (zone === 'early') return; // the button is not live yet
+      resolveJump(a, KIND_OF[zone], now);
     }
   },
 
@@ -291,25 +251,9 @@ export default {
         a.v *= Math.exp(-DRAG * dt);
         a.x += a.v * dt;
 
-        // Ran into the sand without ever committing. Not a foul — nothing was
-        // stepped over — but the attempt is spent, or a player could simply
-        // never jump and never be measured.
-        if (a.x > RUNWAY_M + RUNOUT_M) {
-          recordJump(a, {
-            distance: 0,
-            angle: 0,
-            speed: Math.round(a.v * 10) / 10,
-            kind: KIND.NO_JUMP,
-          });
-          nextAttempt(a);
-        }
-        continue;
-      }
-
-      // Held past three sweeps of the dial: take the jump at whatever it reads,
-      // rather than leaving the athlete standing on the board all round.
-      if (a.stage === 'takeoff' && now - a.holdAt > MAX_HOLD_MS) {
-        releaseJump(a, angleAt(a, now), now);
+        // Over the line and still running. The attempt is gone either way; this
+        // is just the version where they never pressed at all.
+        if (a.x > RUNWAY_M + RUNOUT_M) resolveJump(a, KIND.FOUL, now);
         continue;
       }
 
@@ -341,21 +285,13 @@ export default {
         st: at.stage,
         x: Math.round(at.x * 100) / 100,
         v: Math.round(at.v * 10) / 10,
-        ha: at.holdAt,
         bt: at.best,
         // The arc, while one is being drawn: when it ends, where it left the
-        // ground, how far it really flies, what the tape says, and its shape.
+        // ground, how far it flies, what the tape says, and how it ended.
         f: at.stage === 'flight' && at.flight
-          ? [
-            at.flightUntil,
-            at.flight.fromX,
-            at.flight.range,
-            at.flight.distance,
-            at.flight.angle,
-            at.flight.kind,
-          ]
+          ? [at.flightUntil, at.flight.fromX, at.flight.range, at.flight.distance, at.flight.kind]
           : null,
-        j: at.jumps.map((s) => [s.distance, s.angle, s.kind]),
+        j: at.jumps.map((s) => [s.distance, s.kind]),
       };
     }
     return { s: state.startsAt, e: state.endsAt, board: RUNWAY_M, a };
@@ -364,17 +300,18 @@ export default {
   /** Bot seats and stalled-player fill. */
   botInput(state, botId, difficulty = 0.7, now = 0) {
     const a = state.athletes[botId];
-    if (!a || a.stage === 'done' || now < state.startsAt) return null;
+    if (!a || a.stage !== 'run' || now < state.startsAt) return null;
 
-    if (a.stage === 'takeoff') {
-      const dial = angleAt(a, now);
-      const target = IDEAL_ANGLE_DEG + (1 - difficulty) * 18;
-      return Math.abs(dial - target) < 6 ? { t: 'release', v: dial } : null;
-    }
-    if (a.stage !== 'run') return null;
+    // A strong bot waits for green; a weak one stabs at the button early and
+    // collects the orange jump, which is exactly how a weak human plays it.
+    //
+    // Aimed at three quarters of the way into green rather than at its middle,
+    // because a bot only gets to look once a tick: at 20 Hz and 10.5 m/s it
+    // covers half a metre between looks, and an aim point any deeper than this
+    // is one it can step straight over and out the far side into a foul.
+    const press = PERFECT_M * 0.75 + (1 - difficulty) * (GAUGE_M - PERFECT_M);
+    if (RUNWAY_M - a.x <= press) return { t: 'jump' };
 
-    // Commit near the board, sloppier when weaker.
-    if (a.x > RUNWAY_M - (0.2 + (1 - difficulty) * 4)) return { t: 'jump' };
     const gap = 150 - difficulty * 50;
     if (a.lastStepAt && now - a.lastStepAt < gap) return null;
     return { f: a.foot === 1 ? 0 : 1 };

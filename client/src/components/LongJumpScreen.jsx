@@ -1,20 +1,20 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import longJump, {
   ATTEMPTS,
-  IDEAL_ANGLE_DEG,
+  GAUGE_M,
   KIND,
   PERFECT_M,
   RUNWAY_M,
-  angleAt,
   flightPoint,
+  zoneAt,
 } from '@shared/events/long_jump.js';
 import { babylon } from '../avatar3d/portraits.js';
 import { createLongJumpArena } from '../arena3d/longJumpArena.js';
 import { BUFFER_MS, sampleAt, serverNow } from '../net/interpolation.js';
-import { t, lang } from '../i18n.js';
+import { t } from '../i18n.js';
 import Flag from './Flag.jsx';
 import FootPad from './FootPad.jsx';
-import LongJumpLanes, { BOARD_PCT, pctFor } from './LongJumpLanes.jsx';
+import LongJumpLanes, { pctFor } from './LongJumpLanes.jsx';
 
 // Same reconciliation the sprint uses: a small error eased away invisibly, a
 // large one snapped, because holding a wrong position to look smooth is worse
@@ -22,17 +22,32 @@ import LongJumpLanes, { BOARD_PCT, pctFor } from './LongJumpLanes.jsx';
 const RECONCILE_RATE = 3.5; // per second
 const SNAP_DISTANCE = 4; // metres
 
-// Inside this many metres of the board the readout stops being information and
-// starts being a warning.
-const CLOSE_M = 5;
+// How much runway past the line the gauge shows. Red has to be a band you can
+// see yourself entering, not a state you are only told about afterwards.
+const RED_TAIL_M = 1.2;
+const GAUGE_SPAN_M = GAUGE_M + RED_TAIL_M;
+
+// The three bands, as percentages of the gauge. Derived from the sim's own
+// metres so the picture cannot drift from the rule it is drawing.
+const BAND = {
+  good: ((GAUGE_M - PERFECT_M) / GAUGE_SPAN_M) * 100,
+  perfect: (PERFECT_M / GAUGE_SPAN_M) * 100,
+  foul: (RED_TAIL_M / GAUGE_SPAN_M) * 100,
+};
 
 /**
  * Long Jump.
  *
- * RUN (alternate thumbs down the runway) → TAKEOFF (press and HOLD to plant the
- * foot, ideally right on the board) → ANGLE (release as the dial passes 45°) →
- * the flight, drawn from the shared clock. Three attempts, best counts. Nothing
- * is a foul: stepping over the line costs metres, not the attempt.
+ * RUN (alternate thumbs down the runway) → JUMP (one press, as the white line
+ * arrives) → the flight, drawn from the shared clock. Three attempts, best
+ * counts.
+ *
+ * There is nothing to aim: every jump leaves at 45°, and the only question the
+ * player answers is WHEN. Green is the last half-metre into the line and pays
+ * the full speed you built; orange is the approach and pays three quarters of
+ * it; over the line is a failed attempt. The gauge under the button is that
+ * rule drawn to scale — no text explains it, because a bar that goes green
+ * where you should press does not need explaining.
  *
  * Nothing in the animation loop touches React state: at 60fps that would
  * re-render the tree sixty times a second. The loop writes transforms and text
@@ -43,11 +58,11 @@ const CLOSE_M = 5;
  * Three positions exist for the local athlete and they are deliberately kept
  * apart: the SERVER's (authoritative, 20 Hz, arrives late), the PREDICTED one
  * (the same pure sim run locally on your own taps, so a tap moves you this
- * frame) and the DRAWN one. Prediction is not a nicety here — the board is
+ * frame) and the DRAWN one. Prediction is not a nicety here — the line is
  * timed by eye, and an athlete drawn a tenth of a second in the past is an
  * athlete whose foot lands somewhere the player never chose.
  */
-export default function LongJumpScreen({ room, me, netRef, sendInput, event }) {
+export default function LongJumpScreen({ room, me, netRef, sendInput }) {
   const rootRef = useRef(null);
   const canvasRef = useRef(null);
   const arenaRef = useRef(null);
@@ -55,14 +70,11 @@ export default function LongJumpScreen({ room, me, netRef, sendInput, event }) {
   const laneRefs = useRef(new Map()); // flat fallback only
 
   const clockRef = useRef(null);
-  const readoutRef = useRef(null);
-  const readoutLabelRef = useRef(null);
-  const badgeRef = useRef(null);
+  const scoreRef = useRef(null);
   const speedRef = useRef(null);
-  const stageRef = useRef(null);
-  const dialRef = useRef(null);
-  const needleRef = useRef(null);
-  const dialTextRef = useRef(null);
+  const gaugeRef = useRef(null);
+  const markerRef = useRef(null);
+  const jumpRef = useRef(null);
   const padRefs = useRef([]);
   // When each thumb last went and whether it was the same one twice, so the
   // pads can flash the answer back.
@@ -84,8 +96,7 @@ export default function LongJumpScreen({ room, me, netRef, sendInput, event }) {
 
   const myId = me?.id;
   const players = room.players;
-  const mine = snap?.a?.[myId] ?? null;
-  const attemptsUsed = mine?.j?.length ?? 0;
+  const attemptsUsed = snap?.a?.[myId]?.j?.length ?? 0;
 
   useLayoutEffect(() => {
     // Shaped exactly like one athlete in the shared sim, so the shared module
@@ -97,8 +108,7 @@ export default function LongJumpScreen({ room, me, netRef, sendInput, event }) {
         [myId]: {
           lane: room.lanes?.[myId] ?? 1,
           stage: 'run', x: 0, v: 0, foot: -1, lastStepAt: 0,
-          holdAt: 0, takeoffX: 0, flightUntil: 0, flight: null,
-          jumps: [], best: 0, lastTapAt: 0,
+          flightUntil: 0, flight: null, jumps: [], best: 0, lastTapAt: 0,
         },
       },
     };
@@ -148,18 +158,14 @@ export default function LongJumpScreen({ room, me, netRef, sendInput, event }) {
   }, [myId]);
 
   // --- input --------------------------------------------------------------
-  //
-  // Two thumb pads run the athlete in; anywhere else on the screen is the
-  // take-off. "Press and hold the screen" is the instruction the event is
-  // taught with, so the screen — not a 90px button — is what answers to it: at
-  // the speed the board arrives, hunting for a target is the difference between
-  // a jump and a stumble.
+  // Two thumb pads run the athlete in; one button jumps. That is the whole
+  // control scheme, and it is why nothing on this screen has to be explained.
   useEffect(() => {
-    const stageOf = () => {
+    const liveAthlete = () => {
       const net = netRef.current;
       const latest = net.buffer[net.buffer.length - 1]?.s;
       const a = latest?.a?.[myId];
-      if (!a || a.st === 'done') return null;
+      if (!a || a.st !== 'run') return null;
       if (serverNow(net) < latest.s) return null; // still counting down
       return a;
     };
@@ -171,7 +177,7 @@ export default function LongJumpScreen({ room, me, netRef, sendInput, event }) {
     const stride = (foot) => {
       const pred = predRef.current;
       const local = pred?.athletes[myId];
-      if (!local || stageOf()?.st !== 'run') return;
+      if (!local || !liveAthlete()) return;
 
       // Read the last foot BEFORE applying, or the sim has already overwritten
       // it and every step looks like a clean one. No local filtering beyond
@@ -186,19 +192,9 @@ export default function LongJumpScreen({ room, me, netRef, sendInput, event }) {
       fx.wrong = wrong;
     };
 
-    const press = () => {
-      if (stageOf()?.st !== 'run') return;
+    const jump = () => {
+      if (!liveAthlete()) return;
       sendInput({ t: 'jump' });
-    };
-
-    const release = () => {
-      const a = stageOf();
-      if (a?.st !== 'takeoff') return;
-      // Send the angle the player actually SAW, read off the same pure dial the
-      // server will check it against — sampling only on the server would charge
-      // every player their ping.
-      const v = angleAt({ holdAt: a.ha }, serverNow(netRef.current));
-      sendInput({ t: 'release', v: Math.round(v * 10) / 10 });
     };
 
     // Spacebar alternates on its own so a keyboard is playable at all; the side
@@ -210,39 +206,32 @@ export default function LongJumpScreen({ room, me, netRef, sendInput, event }) {
       if (e.code === 'Space') { e.preventDefault(); stride(nextFoot()); return; }
       if (e.code === 'ArrowLeft' || e.code === 'KeyA') { e.preventDefault(); stride(0); return; }
       if (e.code === 'ArrowRight' || e.code === 'KeyD') { e.preventDefault(); stride(1); return; }
-      if (e.code === 'Enter' || e.code === 'ArrowUp') { e.preventDefault(); press(); }
-    };
-    const onKeyUp = (e) => {
-      if (e.code === 'Enter' || e.code === 'ArrowUp') { e.preventDefault(); release(); }
+      if (e.code === 'Enter' || e.code === 'ArrowUp') { e.preventDefault(); jump(); }
     };
 
     // `pointerdown`, not `click`: a click is only delivered on release, so a
-    // fourteen-a-second cadence would arrive as fourteen late steps. Each
-    // finger raises its own pointerdown, so a thumb resting on one pad never
-    // blocks the other.
+    // fourteen-a-second cadence would arrive as fourteen late steps, and a jump
+    // would be timed off the wrong end of the press. Each finger raises its own
+    // pointerdown, so a thumb resting on one pad never blocks the other.
     const onPointerDown = (e) => {
       const pad = e.target.closest('[data-foot]');
-      e.preventDefault();
-      if (pad) stride(Number(pad.dataset.foot));
-      else press();
+      if (pad) {
+        e.preventDefault();
+        stride(Number(pad.dataset.foot));
+        return;
+      }
+      if (e.target.closest('[data-jump]')) {
+        e.preventDefault();
+        jump();
+      }
     };
 
     const zone = rootRef.current;
     zone?.addEventListener('pointerdown', onPointerDown);
     window.addEventListener('keydown', onKeyDown);
-    window.addEventListener('keyup', onKeyUp);
-    // On the window, not the element: a finger that slides off before lifting
-    // must still release the jump, or the athlete hangs on the board until the
-    // sim's own timeout picks an angle for them.
-    window.addEventListener('pointerup', release);
-    window.addEventListener('pointercancel', release);
-
     return () => {
       zone?.removeEventListener('pointerdown', onPointerDown);
       window.removeEventListener('keydown', onKeyDown);
-      window.removeEventListener('keyup', onKeyUp);
-      window.removeEventListener('pointerup', release);
-      window.removeEventListener('pointercancel', release);
     };
   }, [myId, netRef, sendInput]);
 
@@ -268,20 +257,7 @@ export default function LongJumpScreen({ room, me, netRef, sendInput, event }) {
         const toGun = latest.s - now;
         clockRef.current.textContent = toGun > 0
           ? String(Math.ceil(toGun / 1000))
-          : `${Math.max(0, Math.ceil((latest.e - now) / 1000))}s`;
-      }
-
-      const a = latest.a?.[myId];
-      if (a && stageRef.current) {
-        stageRef.current.textContent = now < latest.s
-          ? t.getReady
-          : a.st === 'run'
-            ? t.ljRun
-            : a.st === 'takeoff'
-              ? t.ljAngle
-              : a.st === 'flight'
-                ? t.ljFlight
-                : t.ljDone;
+          : t.secs(Math.max(0, Math.ceil((latest.e - now) / 1000)));
       }
     };
 
@@ -328,9 +304,9 @@ export default function LongJumpScreen({ room, me, netRef, sendInput, event }) {
             local.foot = -1;
           } else {
             longJump.step(pred, dt, sNow);
-            // `step` can also spend the attempt on its own, by running into the
-            // sand. That call is the server's; made here it would teleport the
-            // athlete back to the top of the runway a whole round trip early.
+            // `step` can also end the attempt on its own, by running past the
+            // line. That call is the server's; made here it would take the
+            // attempt away a whole round trip early.
             if (local.stage !== 'run') {
               local.stage = 'run';
               local.x = server.x;
@@ -340,8 +316,8 @@ export default function LongJumpScreen({ room, me, netRef, sendInput, event }) {
             }
           }
         } else {
-          // Held on the board, or in the air: the server owns both, and there
-          // is nothing for a prediction to add.
+          // In the air, or done: the server owns both, and there is nothing for
+          // a prediction to add.
           local.x = server.x;
           local.v = server.v;
         }
@@ -367,83 +343,38 @@ export default function LongJumpScreen({ room, me, netRef, sendInput, event }) {
 
       // --- the HUD ----------------------------------------------------------
       const meNow = drawn[myId];
-      const toBoard = meNow ? RUNWAY_M - meNow.x : RUNWAY_M;
 
       if (speedRef.current) {
         speedRef.current.style.width = `${Math.min(100, ((meNow?.v ?? 0) / 10.5) * 100).toFixed(1)}%`;
       }
 
-      const node = readoutRef.current;
-      const label = readoutLabelRef.current;
-      const badge = badgeRef.current;
-      if (node) {
-        if (!started) {
-          node.textContent = '';
-          node.dataset.tone = 'plain';
-          if (label) label.textContent = '';
-          if (badge) badge.textContent = '';
-        } else if (meNow?.st === 'flight' && meNow.f) {
-          // The flight carries its own result, so the measurement needs neither
-          // a timer nor a piece of state: it is on screen exactly as long as
-          // the jump it belongs to.
-          const [, , , distance, , kind] = meNow.f;
-          node.textContent = `${distance.toFixed(2)}м`;
-          node.dataset.tone = kind === KIND.PERFECT ? 'good' : kind === KIND.OVERSTEP ? 'warn' : 'plain';
-          if (label) label.textContent = t.ljMeasured;
-          if (badge) {
-            badge.textContent = kind === KIND.PERFECT
-              ? t.ljPerfect
-              : kind === KIND.OVERSTEP
-                ? t.ljOverstep
-                : '';
-            badge.dataset.tone = kind === KIND.PERFECT ? 'good' : 'warn';
-          }
-        } else if (meNow?.st === 'done') {
+      // The score, and only the score: the jump being drawn while it is being
+      // drawn, the best so far the rest of the time. The flight carries its own
+      // result, so this needs neither a timer nor a piece of state.
+      if (scoreRef.current) {
+        const node = scoreRef.current;
+        if (meNow?.st === 'flight' && meNow.f) {
+          const [, , , distance, kind] = meNow.f;
+          node.textContent = kind === KIND.FOUL ? t.ljFoul : `${distance.toFixed(2)}м`;
+          node.dataset.tone = kind === KIND.FOUL ? 'foul' : kind === KIND.PERFECT ? 'perfect' : 'good';
+        } else {
           node.textContent = `${(server?.bt ?? 0).toFixed(2)}м`;
           node.dataset.tone = 'plain';
-          if (label) label.textContent = t.ljBest;
-          if (badge) badge.textContent = '';
-        } else {
-          // Metres to the board — the only number that matters on the way in,
-          // and the one the event is timed against. It goes NEGATIVE past the
-          // line rather than clamping at zero: over the board is a price, not a
-          // wall, and a player has to be able to see what they are paying.
-          node.textContent = toBoard >= 0 ? `${toBoard.toFixed(1)}м` : `+${(-toBoard).toFixed(1)}м`;
-          node.dataset.tone = toBoard < 0
-            ? 'warn'
-            : toBoard <= PERFECT_M ? 'good' : toBoard < CLOSE_M ? 'close' : 'plain';
-          if (label) label.textContent = t.ljToBoard;
-          if (badge) badge.textContent = '';
         }
       }
 
-      // --- the angle dial ---------------------------------------------------
-      const dial = dialRef.current;
-      if (dial) {
-        const live = meNow?.st === 'takeoff' && server;
-        if (live) {
-          const angle = angleAt({ holdAt: server.ha }, sNow);
-          if (needleRef.current) {
-            needleRef.current.setAttribute('transform', `rotate(${-angle.toFixed(1)} 14 106)`);
-          }
-          if (dialTextRef.current) dialTextRef.current.textContent = `${Math.round(angle)}°`;
-          dial.dataset.good = Math.abs(angle - IDEAL_ANGLE_DEG) < 6 ? '1' : '0';
+      // --- the timing gauge -------------------------------------------------
+      // One number decides everything on this screen: how far the athlete is
+      // from the line. The marker rides it, the button wears its colour.
+      const gap = meNow ? RUNWAY_M - meNow.x : RUNWAY_M;
+      const zone = meNow && started && meNow.st === 'run' ? zoneAt(meNow.x) : 'early';
 
-          // Beside the athlete in 3D, over the board on the flat strip: either
-          // way it is next to the thing it describes, rather than parked in a
-          // corner of the HUD where reading it costs a glance away from the
-          // board.
-          const at = arena?.headScreenPos(myId) ?? flatDialPos(stripRef.current);
-          if (at) {
-            dial.style.opacity = '1';
-            dial.style.transform = `translate3d(${at.x}px, ${at.y}px, 0) translate(-112%, -58%)`;
-          } else {
-            dial.style.opacity = '0';
-          }
-        } else {
-          dial.style.opacity = '0';
-        }
+      if (markerRef.current) {
+        const at = ((GAUGE_M - gap) / GAUGE_SPAN_M) * 100;
+        markerRef.current.style.left = `${Math.max(0, Math.min(100, at)).toFixed(2)}%`;
       }
+      if (gaugeRef.current) gaugeRef.current.dataset.live = zone === 'early' ? '0' : '1';
+      if (jumpRef.current) jumpRef.current.dataset.zone = zone;
 
       // --- the pads answer back --------------------------------------------
       const canRun = meNow?.st === 'run' && started;
@@ -475,83 +406,71 @@ export default function LongJumpScreen({ room, me, netRef, sendInput, event }) {
         <canvas ref={canvasRef} className="absolute inset-0 h-full w-full outline-none" aria-hidden="true" />
       ) : null}
 
-      <header className="relative flex items-baseline justify-between px-5 pt-5">
-        <p className="label mb-0 text-white/70 [text-shadow:0_1px_4px_rgba(0,0,0,0.85)]">
-          {event?.name?.[lang] ?? event?.name?.en}
+      {/* The whole HUD: attempt, clock, score, speed. Nothing else — the
+          controls teach themselves. */}
+      <header className="relative flex items-center justify-between px-5 pt-5">
+        <p className="font-mono text-sm font-bold tabular-nums text-white/80 [text-shadow:0_1px_4px_rgba(0,0,0,0.85)]">
+          {Math.min(attemptsUsed + 1, ATTEMPTS)}/{ATTEMPTS}
         </p>
         <p
           ref={clockRef}
-          className="font-mono text-lg font-bold tabular-nums [text-shadow:0_1px_4px_rgba(0,0,0,0.85)]"
-        >
-          –
-        </p>
+          className="font-mono text-sm font-bold tabular-nums text-white/80 [text-shadow:0_1px_4px_rgba(0,0,0,0.85)]"
+        />
       </header>
 
-      <div className="relative mt-1 text-center">
-        <p
-          ref={readoutRef}
-          data-tone="plain"
-          className="font-mono text-4xl font-bold tabular-nums [text-shadow:0_2px_8px_rgba(0,0,0,0.9)]
-                     data-[tone=plain]:text-white data-[tone=close]:text-amber-300
-                     data-[tone=good]:text-emerald-400 data-[tone=warn]:text-red-400"
-        />
-        <p ref={readoutLabelRef} className="text-[11px] uppercase tracking-wider text-white/60" />
-        <p
-          ref={badgeRef}
-          data-tone="good"
-          className="mt-0.5 text-sm font-bold tracking-wide
-                     data-[tone=good]:text-emerald-400 data-[tone=warn]:text-amber-400"
-        />
+      <p
+        ref={scoreRef}
+        data-tone="plain"
+        className="relative mt-1 text-center font-mono text-4xl font-bold tabular-nums
+                   [text-shadow:0_2px_8px_rgba(0,0,0,0.9)]
+                   data-[tone=plain]:text-white data-[tone=good]:text-amber-300
+                   data-[tone=perfect]:text-emerald-400 data-[tone=foul]:text-red-400"
+      />
+
+      <div className="relative mx-5 mt-3 h-1.5 overflow-hidden rounded-full bg-black/50">
+        <div ref={speedRef} style={{ width: '0%' }} className="h-full rounded-full bg-sky-400" />
       </div>
 
       {arenaOk ? (
         <div className="flex-1" />
       ) : (
-        // NOT `relative`: the dial is placed against the root, and a positioned
-        // wrapper here would silently become the strip's offsetParent and take
-        // the dial's anchor with it.
         <div className="px-5">
           <LongJumpLanes players={players} myId={myId} stripRef={stripRef} laneRefs={laneRefs} />
         </div>
       )}
 
-      {/* Speed and the attempt count on one line: two numbers that only mean
-          anything next to each other — a fast run-up is worth nothing on your
-          last attempt if you cannot put the foot down. */}
-      <div className="relative mt-2 flex items-center gap-3 px-5">
-        <span className="text-[10px] uppercase tracking-wider text-white/60">{t.speed}</span>
-        <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-black/50">
-          <div ref={speedRef} style={{ width: '0%' }} className="h-full rounded-full bg-sky-400" />
-        </div>
-        <span className="text-xs text-white/70">
-          {t.ljAttempt(Math.min(attemptsUsed + 1, ATTEMPTS), ATTEMPTS)}
-        </span>
-      </div>
-
-      <p
-        ref={stageRef}
-        className="relative mt-2 text-center text-sm font-semibold text-white [text-shadow:0_1px_4px_rgba(0,0,0,0.9)]"
-      >
-        –
-      </p>
-
-      {/* The pads, hard into the bottom corners — where the thumbs already are
-          when a phone is held in two hands. Everything between them, and every
-          other pixel on the screen, is the take-off. */}
-      <div className="relative mt-2 flex items-end justify-between px-4 pb-5">
+      {/* Pads in the corners where the thumbs already are, the jump between
+          them with its gauge directly above it — the bar and the button are one
+          control, and putting the bar anywhere else would split the glance. */}
+      <div className="relative mt-2 flex items-end justify-between gap-3 px-4 pb-6">
         <FootPad foot={0} label={t.leftFoot} nodeRef={(n) => { padRefs.current[0] = n; }} />
-        <div className="pointer-events-none mb-4 flex-1 px-2 text-center">
-          <p className="text-xs font-bold tracking-wide text-white [text-shadow:0_1px_4px_rgba(0,0,0,0.9)]">
-            {t.ljHoldBtn}
-          </p>
-          <p className="mt-1 text-[11px] leading-tight text-white/70 [text-shadow:0_1px_4px_rgba(0,0,0,0.9)]">
-            {t.ljHint}
-          </p>
+
+        <div className="flex flex-1 flex-col items-center gap-2">
+          <TimingGauge gaugeRef={gaugeRef} markerRef={markerRef} />
+          <button
+            ref={jumpRef}
+            type="button"
+            data-jump
+            data-zone="early"
+            aria-label={t.ljJumpBtn}
+            className="grid h-20 w-20 shrink-0 select-none place-items-center rounded-full border-2
+                       text-sm font-bold tracking-widest transition-colors duration-75
+                       data-[zone=early]:border-white/25 data-[zone=early]:bg-black/50
+                       data-[zone=early]:text-white/40
+                       data-[zone=good]:border-amber-300 data-[zone=good]:bg-amber-400/80
+                       data-[zone=good]:text-neutral-950
+                       data-[zone=perfect]:border-emerald-200 data-[zone=perfect]:bg-emerald-400
+                       data-[zone=perfect]:text-neutral-950 data-[zone=perfect]:ring-4
+                       data-[zone=perfect]:ring-emerald-300/50
+                       data-[zone=foul]:border-red-300 data-[zone=foul]:bg-red-500/85
+                       data-[zone=foul]:text-white"
+          >
+            {t.ljJumpBtn}
+          </button>
         </div>
+
         <FootPad foot={1} label={t.rightFoot} nodeRef={(n) => { padRefs.current[1] = n; }} />
       </div>
-
-      <AngleDial nodeRef={dialRef} needleRef={needleRef} textRef={dialTextRef} />
 
       <Scoreboard room={room} snap={snap} meId={myId} />
     </div>
@@ -559,42 +478,31 @@ export default function LongJumpScreen({ room, me, netRef, sendInput, event }) {
 }
 
 /**
- * The angle indicator.
+ * The timing gauge.
  *
- * A quarter dial that sweeps 0°→90° and back for as long as the take-off is
- * held, with the 45° band it is aimed at drawn ON it rather than described in a
- * hint underneath. The needle is written by the render loop; React never
- * re-renders this.
+ * The last few metres of runway drawn to scale: orange approach, a green band
+ * for the last half-metre into the line, red past it. The marker is the
+ * athlete. It is dimmed until the button goes live, so "not yet" is a state you
+ * can see rather than a press that silently does nothing.
  */
-function AngleDial({ nodeRef, needleRef, textRef }) {
+function TimingGauge({ gaugeRef, markerRef }) {
   return (
     <div
-      ref={nodeRef}
-      data-good="0"
-      style={{ opacity: 0 }}
-      className="group pointer-events-none absolute left-0 top-0 h-32 w-32 transition-opacity
-                 duration-150 will-change-transform"
+      ref={gaugeRef}
+      data-live="0"
+      className="relative h-3 w-full max-w-[13rem] overflow-hidden rounded-full border border-white/20
+                 bg-black/60 opacity-40 transition-opacity duration-150 data-[live='1']:opacity-100"
     >
-      <svg viewBox="0 0 128 128" className="h-full w-full overflow-visible">
-        {/* the sweep, and the band worth hitting */}
-        <path d="M14 106 A 78 78 0 0 1 92 28" fill="none" stroke="rgba(0,0,0,0.5)" strokeWidth="14" strokeLinecap="round" />
-        <path d="M14 106 A 78 78 0 0 1 92 28" fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="2" />
-        <path d="M50.9 41.3 A 78 78 0 0 1 63.9 33.9" fill="none" stroke="#34d399" strokeWidth="12" />
-        <text x="86" y="26" fill="#34d399" fontSize="15" fontWeight="700" textAnchor="middle">45°</text>
-
-        <g ref={needleRef} transform="rotate(0 14 106)">
-          <line x1="14" y1="106" x2="86" y2="106" stroke="#ffffff" strokeWidth="5" strokeLinecap="round" />
-          {/* an arrowhead, so it reads as a direction rather than a clock hand */}
-          <path d="M84 98 L100 106 L84 114 Z" fill="#ffffff" />
-        </g>
-        <circle cx="14" cy="106" r="7" fill="#0f1420" stroke="#ffffff" strokeWidth="3" />
-      </svg>
-
-      <span
-        ref={textRef}
-        className="absolute bottom-0 right-0 rounded bg-black/70 px-1.5 py-0.5 font-mono text-sm font-bold
-                   tabular-nums text-white group-data-[good='1']:bg-emerald-500
-                   group-data-[good='1']:text-neutral-950"
+      <div className="absolute inset-0 flex">
+        <div style={{ width: `${BAND.good}%` }} className="h-full bg-amber-400/80" />
+        <div style={{ width: `${BAND.perfect}%` }} className="h-full bg-emerald-400" />
+        <div style={{ width: `${BAND.foul}%` }} className="h-full bg-red-500/85" />
+      </div>
+      <div
+        ref={markerRef}
+        style={{ left: '0%' }}
+        className="absolute inset-y-0 w-1 -translate-x-1/2 rounded-full bg-white shadow
+                   shadow-black/60 will-change-[left]"
       />
     </div>
   );
@@ -625,15 +533,6 @@ function drawFlat(drawn, players, laneNodes, strip, sNow) {
   }
 }
 
-/** Where the dial sits with no arena to hang it off: over the board. */
-function flatDialPos(strip) {
-  if (!strip) return null;
-  return {
-    x: strip.offsetLeft + (strip.offsetWidth * BOARD_PCT) / 100,
-    y: strip.offsetTop + strip.offsetHeight * 0.4,
-  };
-}
-
 function Scoreboard({ room, snap, meId }) {
   const rows = room.players
     .map((p) => ({ player: p, a: snap?.a?.[p.id] }))
@@ -654,7 +553,7 @@ function Scoreboard({ room, snap, meId }) {
           <span className="flex gap-1">
             {Array.from({ length: ATTEMPTS }, (_, i) => {
               const jump = a?.j?.[i];
-              const kind = jump?.[2];
+              const kind = jump?.[1];
               return (
                 <span
                   key={i}
@@ -662,16 +561,14 @@ function Scoreboard({ room, snap, meId }) {
                     'grid h-5 w-9 place-items-center rounded text-[10px] font-semibold tabular-nums',
                     !jump
                       ? 'bg-black/40 text-neutral-500'
-                      : kind === KIND.NO_JUMP
-                        ? 'bg-neutral-700/60 text-neutral-400'
+                      : kind === KIND.FOUL
+                        ? 'bg-red-500/25 text-red-300'
                         : kind === KIND.PERFECT
                           ? 'bg-emerald-500/25 text-emerald-300'
-                          : kind === KIND.OVERSTEP
-                            ? 'bg-amber-500/25 text-amber-200'
-                            : 'bg-neutral-700 text-neutral-100',
+                          : 'bg-amber-500/25 text-amber-200',
                   ].join(' ')}
                 >
-                  {!jump ? '·' : kind === KIND.NO_JUMP ? '–' : jump[0].toFixed(2)}
+                  {!jump ? '·' : kind === KIND.FOUL ? '✕' : jump[0].toFixed(2)}
                 </span>
               );
             })}

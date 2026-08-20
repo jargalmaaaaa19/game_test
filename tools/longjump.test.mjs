@@ -6,17 +6,16 @@ import longJump, {
   ATTEMPTS,
   COUNTDOWN_MS,
   FLIGHT_MS,
-  IDEAL_ANGLE_DEG,
+  GAUGE_M,
+  GOOD_FACTOR,
   KIND,
-  MAX_HOLD_MS,
   MIN_STEP_INTERVAL_MS,
   PERFECT_M,
   RUNOUT_M,
   RUNWAY_M,
-  angleAt,
-  boardGap,
   flightPoint,
   jumpDistance,
+  zoneAt,
 } from '../shared/events/long_jump.js';
 import { pointsForPlacement } from '../shared/scoring.js';
 
@@ -40,8 +39,8 @@ const seats = [
 const fresh = () => longJump.initState(seats, () => 0.5, T0);
 const live = T0 + COUNTDOWN_MS + 1;
 
-/** Run in on a clean alternating cadence until the athlete is near the board. */
-function runUp(state, id, { stopBefore = 0.6, from = live } = {}) {
+/** Run in on a clean alternating cadence until the athlete is near the line. */
+function runUp(state, id, { stopBefore = 0.3, from = live } = {}) {
   let at = from;
   let foot = 0;
   for (let i = 0; i < 400; i += 1) {
@@ -55,63 +54,45 @@ function runUp(state, id, { stopBefore = 0.6, from = live } = {}) {
   return at;
 }
 
-/**
- * Take off, hold for `holdMs`, release, and let the flight play out. The dial
- * takes half its period to climb, so 350ms of hold IS 45° — the default here is
- * a perfect release, and anything else is a deliberately worse one.
- */
-function jump(state, id, at, holdMs = 350) {
+/** Press the jump button from wherever the athlete is, and let the flight run. */
+function jump(state, id, at) {
   longJump.applyInput(state, id, { t: 'jump' }, at);
-  const a = state.athletes[id];
-  const releaseAt = at + holdMs;
-  longJump.applyInput(state, id, { t: 'release', v: angleAt(a, releaseAt) }, releaseAt);
-  const after = releaseAt + FLIGHT_MS + 50;
+  const after = at + FLIGHT_MS + 50;
   longJump.step(state, 0.1, after);
   return after;
 }
 
 console.log('\nlong jump sim');
 
-test('45° is the optimal angle', () => {
-  const at45 = jumpDistance(10, 45, 1);
-  for (const angle of [15, 30, 40, 50, 60, 75]) {
-    assert.ok(jumpDistance(10, angle, 1) < at45, `${angle}° beat 45°`);
-  }
+test('the gauge names the band the athlete is standing in', () => {
+  assert.equal(zoneAt(RUNWAY_M), 'perfect');
+  assert.equal(zoneAt(RUNWAY_M - PERFECT_M), 'perfect'); // the edge is inclusive
+  assert.equal(zoneAt(RUNWAY_M - PERFECT_M - 0.01), 'good');
+  assert.equal(zoneAt(RUNWAY_M - GAUGE_M), 'good');
+  assert.equal(zoneAt(RUNWAY_M - GAUGE_M - 0.01), 'early');
+  assert.equal(zoneAt(RUNWAY_M + 0.01), 'foul');
 });
 
-test('a faster run-up jumps further', () => {
-  assert.ok(jumpDistance(10, 45, 1) > jumpDistance(7, 45, 1));
+test('green pays the full speed, orange three quarters of it', () => {
+  const green = jumpDistance(10, KIND.PERFECT);
+  const orange = jumpDistance(10, KIND.GOOD);
+  assert.ok(Math.abs(orange - jumpDistance(10 * GOOD_FACTOR, KIND.PERFECT)) < 1e-9);
+  assert.ok(orange < green * 0.6, `orange is not a real cost: ${orange} vs ${green}`);
 });
 
-test('taking off early costs exactly the gap left behind', () => {
-  const full = jumpDistance(10, 45, 1);
-  const early = jumpDistance(10, 45, 2.5);
-  assert.ok(Math.abs(full - early - 1.5) < 0.001, `${full} - ${early}`);
+test('a faster run-up jumps further, in both bands', () => {
+  assert.ok(jumpDistance(10, KIND.PERFECT) > jumpDistance(7, KIND.PERFECT));
+  assert.ok(jumpDistance(10, KIND.GOOD) > jumpDistance(7, KIND.GOOD));
+});
+
+test('a foul measures nothing at any speed', () => {
+  assert.equal(jumpDistance(10.5, KIND.FOUL), 0);
+  assert.equal(jumpDistance(0, KIND.FOUL), 0);
 });
 
 test('a perfect jump lands in a plausible range', () => {
-  const d = jumpDistance(10.5, 45, 0);
+  const d = jumpDistance(10.5, KIND.PERFECT);
   assert.ok(d > 7 && d < 9.5, `implausible distance: ${d}`);
-});
-
-test('hitting the board beats being short of it', () => {
-  assert.ok(jumpDistance(10, 45, 0) > jumpDistance(10, 45, PERFECT_M + 0.5));
-});
-
-test('the perfect window is the board and a boot before it, no more', () => {
-  const onLine = jumpDistance(10, 45, 0);
-  const justInside = jumpDistance(10, 45, PERFECT_M);
-  const justOutside = jumpDistance(10, 45, PERFECT_M + 0.01);
-  assert.ok(justInside > justOutside + 0.3, 'the window has no edge');
-  assert.ok(onLine > justInside, 'inside the window, closer is still better');
-});
-
-test('stepping over the line costs metres rather than the attempt', () => {
-  const over = jumpDistance(10, 45, -0.5);
-  assert.ok(over > 0, 'an overstep scored zero — that is a foul by another name');
-  // Steeper than the overshoot gains, or reaching past the board would be the
-  // optimal play.
-  assert.ok(over < jumpDistance(10, 45, 0.5), 'overstepping beat being short by the same gap');
 });
 
 test('a run-up tap before the gun does nothing', () => {
@@ -147,44 +128,78 @@ test('one thumb hammered is slower than two alternating', () => {
   );
 });
 
-test('taking off past the board is measured, not struck off', () => {
+test('pressing before the gauge wakes up is ignored, not scored', () => {
+  const state = fresh();
+  const a = state.athletes.ace;
+  runUp(state, 'ace', { stopBefore: GAUGE_M + 2 });
+  assert.equal(zoneAt(a.x), 'early');
+  longJump.applyInput(state, 'ace', { t: 'jump' }, live + 5_000);
+  assert.equal(a.jumps.length, 0, 'an out-of-range press took an attempt');
+  assert.equal(a.stage, 'run');
+});
+
+test('a press in the green band is a perfect jump', () => {
   const state = fresh();
   const a = state.athletes.ace;
   const at = runUp(state, 'ace');
-  a.x = RUNWAY_M + 0.5; // deliberately over the line
-  jump(state, 'ace', at + 200);
+  a.x = RUNWAY_M - PERFECT_M / 2;
+  jump(state, 'ace', at + 50);
+  assert.equal(a.jumps[0][1] ?? a.jumps[0].kind, KIND.PERFECT);
+  assert.ok(a.jumps[0].distance > 0);
+});
+
+test('a press in the orange band scores, and scores less', () => {
+  const green = fresh();
+  const orange = fresh();
+  const at = runUp(green, 'ace');
+  runUp(orange, 'ace');
+  orange.athletes.ace.v = green.athletes.ace.v; // same run-up, different press
+  green.athletes.ace.x = RUNWAY_M - PERFECT_M / 2;
+  orange.athletes.ace.x = RUNWAY_M - GAUGE_M + 0.1;
+
+  jump(green, 'ace', at + 50);
+  jump(orange, 'ace', at + 50);
+  assert.equal(orange.athletes.ace.jumps[0].kind, KIND.GOOD);
+  assert.ok(orange.athletes.ace.best > 0, 'orange scored nothing');
+  assert.ok(green.athletes.ace.best > orange.athletes.ace.best);
+});
+
+test('the distance is the speed and the band, and nothing else', () => {
+  // Two presses in the same band from different marks must measure the same:
+  // the old version subtracted the gap, and a gauge cannot honestly draw that.
+  const near = fresh();
+  const far = fresh();
+  const at = runUp(near, 'ace');
+  runUp(far, 'ace');
+  far.athletes.ace.v = near.athletes.ace.v;
+  near.athletes.ace.x = RUNWAY_M - 0.1;
+  far.athletes.ace.x = RUNWAY_M - PERFECT_M;
+  jump(near, 'ace', at + 50);
+  jump(far, 'ace', at + 50);
+  assert.equal(near.athletes.ace.best, far.athletes.ace.best);
+});
+
+test('over the line is a failed attempt worth zero', () => {
+  const state = fresh();
+  const a = state.athletes.ace;
+  const at = runUp(state, 'ace');
+  a.x = RUNWAY_M + 0.4; // over the white line
+  jump(state, 'ace', at + 50);
   assert.equal(a.jumps.length, 1);
-  assert.equal(a.jumps[0].kind, KIND.OVERSTEP);
-  assert.ok(a.jumps[0].distance > 0, 'an overstep measured zero');
-  assert.ok(a.best > 0, 'an overstep did not count toward the best');
+  assert.equal(a.jumps[0].kind, KIND.FOUL);
+  assert.equal(a.jumps[0].distance, 0);
+  assert.equal(a.best, 0);
 });
 
-test('a take-off on the line is flagged perfect and pays a bonus', () => {
-  const onLine = fresh();
-  const short = fresh();
-  const at = runUp(onLine, 'ace');
-  runUp(short, 'ace');
-  onLine.athletes.ace.x = RUNWAY_M;
-  short.athletes.ace.x = RUNWAY_M - PERFECT_M - 0.5;
-  short.athletes.ace.v = onLine.athletes.ace.v;
-
-  jump(onLine, 'ace', at);
-  jump(short, 'ace', at);
-  assert.equal(onLine.athletes.ace.jumps[0].kind, KIND.PERFECT);
-  assert.equal(short.athletes.ace.jumps[0].kind, KIND.PLAIN);
-  assert.ok(onLine.athletes.ace.best > short.athletes.ace.best);
-});
-
-test('running into the sand without jumping spends the attempt', () => {
+test('running past the line without pressing fails the same way', () => {
   const state = fresh();
   const a = state.athletes.ace;
   a.x = RUNWAY_M + RUNOUT_M - 0.1;
   a.v = 9;
   longJump.step(state, 0.2, live + 1000);
   assert.equal(a.jumps.length, 1);
-  assert.equal(a.jumps[0].kind, KIND.NO_JUMP);
-  assert.equal(a.jumps[0].distance, 0);
-  assert.equal(a.stage, 'run', 'the athlete was not put back on the runway');
+  assert.equal(a.jumps[0].kind, KIND.FOUL);
+  assert.equal(a.stage, 'flight', 'the failure was not held on screen');
 });
 
 test('the flight is held on the clock, then the next attempt starts', () => {
@@ -192,30 +207,25 @@ test('the flight is held on the clock, then the next attempt starts', () => {
   const a = state.athletes.ace;
   const at = runUp(state, 'ace');
   longJump.applyInput(state, 'ace', { t: 'jump' }, at);
-  longJump.applyInput(state, 'ace', { t: 'release', v: IDEAL_ANGLE_DEG }, at + 350);
   assert.equal(a.stage, 'flight');
 
-  longJump.step(state, 0.1, at + 350 + FLIGHT_MS - 200);
+  longJump.step(state, 0.1, at + FLIGHT_MS - 200);
   assert.equal(a.stage, 'flight', 'the flight was cut short');
-  longJump.step(state, 0.1, at + 350 + FLIGHT_MS + 10);
+  longJump.step(state, 0.1, at + FLIGHT_MS + 10);
   assert.equal(a.stage, 'run');
   assert.equal(a.x, 0);
 });
 
-test('the drawn arc leaves the board and lands down the pit', () => {
+test('the drawn arc leaves the line and lands down the pit', () => {
   const state = fresh();
-  const a = state.athletes.ace;
   const at = runUp(state, 'ace');
-  jump(state, 'ace', at, 700);
-  // Re-run one flight and sample it, rather than trusting the numbers alone.
-  const at2 = runUp(state, 'ace', { from: at + 3_000 });
-  longJump.applyInput(state, 'ace', { t: 'jump' }, at2);
-  longJump.applyInput(state, 'ace', { t: 'release', v: IDEAL_ANGLE_DEG }, at2 + 350);
+  state.athletes.ace.x = RUNWAY_M - 0.2; // green, wherever the run-up stopped
+  longJump.applyInput(state, 'ace', { t: 'jump' }, at);
   const wire = longJump.snapshot(state).a.ace.f;
 
-  const launch = flightPoint(wire, at2 + 350);
-  const mid = flightPoint(wire, at2 + 350 + FLIGHT_MS * 0.3);
-  const land = flightPoint(wire, at2 + 350 + FLIGHT_MS);
+  const launch = flightPoint(wire, at);
+  const mid = flightPoint(wire, at + FLIGHT_MS * 0.3);
+  const land = flightPoint(wire, at + FLIGHT_MS);
   assert.ok(Math.abs(launch.y) < 0.01, `launched at ${launch.y}m off the ground`);
   assert.ok(mid.y > 0.5, `the arc never left the ground: ${mid.y}`);
   assert.ok(mid.x > launch.x && land.x > mid.x, 'the jump did not travel');
@@ -223,50 +233,24 @@ test('the drawn arc leaves the board and lands down the pit', () => {
   assert.equal(land.landed, 1);
 });
 
-test('a release without a take-off is ignored', () => {
-  const state = fresh();
-  longJump.applyInput(state, 'ace', { t: 'release', v: 45 }, live + 500);
-  assert.equal(state.athletes.ace.jumps.length, 0);
-});
-
-test('a hold left forever is taken off the player', () => {
+test('a failed attempt holds the athlete where they blew it', () => {
   const state = fresh();
   const a = state.athletes.ace;
   const at = runUp(state, 'ace');
+  a.x = RUNWAY_M + 0.4;
   longJump.applyInput(state, 'ace', { t: 'jump' }, at);
-  longJump.step(state, 0.1, at + MAX_HOLD_MS + 10);
-  assert.equal(a.jumps.length, 1);
-  assert.equal(a.stage, 'flight');
-});
-
-test('a forged release angle is replaced by the server’s dial', () => {
-  const state = fresh();
-  const a = state.athletes.ace;
-  const at = runUp(state, 'ace');
-  longJump.applyInput(state, 'ace', { t: 'jump' }, at);
-  assert.equal(a.stage, 'takeoff');
-
-  const when = at + 900;
-  const server = angleAt(a, when);
-  longJump.applyInput(state, 'ace', { t: 'release', v: server + 80 }, when);
-  assert.ok(
-    Math.abs(a.jumps.at(-1).angle - server) <= 1,
-    `forged angle accepted: ${a.jumps.at(-1).angle} vs ${server}`,
-  );
+  const wire = longJump.snapshot(state).a.ace.f;
+  const mid = flightPoint(wire, at + FLIGHT_MS * 0.3);
+  assert.equal(mid.y, 0, 'a foul was drawn flying');
+  assert.ok(Math.abs(mid.x - (RUNWAY_M + 0.4)) < 0.02, `a foul travelled to ${mid.x}`);
 });
 
 test('a garbage payload cannot jump or crash', () => {
   const state = fresh();
-  for (const bad of [null, undefined, {}, { t: 'nope' }, { t: 'release', v: 'x' }, { f: 7 }]) {
+  for (const bad of [null, undefined, {}, { t: 'nope' }, { t: 'release', v: 45 }, { f: 7 }]) {
     longJump.applyInput(state, 'ace', bad, live + 400);
   }
   assert.equal(state.athletes.ace.jumps.length, 0);
-});
-
-test('the board gap is signed from the board', () => {
-  assert.equal(boardGap(RUNWAY_M), 0);
-  assert.ok(boardGap(RUNWAY_M - 2) > 0);
-  assert.ok(boardGap(RUNWAY_M + 2) < 0);
 });
 
 test('each athlete gets exactly three attempts', () => {
@@ -286,11 +270,11 @@ test('the best of three counts, not the last', () => {
   const state = fresh();
   const a = state.athletes.ace;
   a.jumps = [
-    { distance: 6.2, angle: 45, speed: 9, kind: KIND.PLAIN },
-    { distance: 7.4, angle: 45, speed: 10, kind: KIND.PERFECT },
+    { distance: 6.2, kind: KIND.GOOD, speed: 9 },
+    { distance: 7.4, kind: KIND.PERFECT, speed: 10 },
   ];
   a.best = 7.4;
-  a.jumps.push({ distance: 0, angle: 0, speed: 9, kind: KIND.NO_JUMP });
+  a.jumps.push({ distance: 0, kind: KIND.FOUL, speed: 9 });
   assert.equal(a.best, 7.4);
 });
 
@@ -313,35 +297,34 @@ test('the wire snapshot is compact and quantized', () => {
   const a = state.athletes.ace;
   const at = runUp(state, 'ace');
   longJump.applyInput(state, 'ace', { t: 'jump' }, at);
-  longJump.applyInput(state, 'ace', { t: 'release', v: IDEAL_ANGLE_DEG }, at + 350);
 
   const wire = longJump.snapshot(state);
   assert.deepEqual(Object.keys(wire).sort(), ['a', 'board', 'e', 's']);
-  assert.deepEqual(Object.keys(wire.a.ace).sort(), ['bt', 'f', 'ha', 'j', 'l', 'st', 'v', 'x']);
-  assert.equal(wire.a.ace.f.length, 6, 'the flight is not the shape the renderers read');
+  assert.deepEqual(Object.keys(wire.a.ace).sort(), ['bt', 'f', 'j', 'l', 'st', 'v', 'x']);
+  assert.equal(wire.a.ace.f.length, 5, 'the flight is not the shape the renderers read');
+  assert.equal(wire.a.ace.j[0].length, 2, 'a jump on the wire is distance and kind');
   const [distance] = wire.a.ace.j[0];
   assert.equal(Math.round(distance * 100) / 100, distance, 'distance not quantized');
 
-  longJump.step(state, 0.1, at + 350 + FLIGHT_MS + 10);
+  longJump.step(state, 0.1, at + FLIGHT_MS + 10);
   assert.equal(longJump.snapshot(state).a.ace.f, null, 'a finished flight is still on the wire');
   assert.equal(a.stage, 'run');
 });
 
-test('a bot alternates its feet and commits near the board', () => {
-  const state = fresh();
-  const a = state.athletes.ace;
-  let at = live;
-  let seen = { 0: 0, 1: 0 };
-  for (let i = 0; i < 200 && a.stage === 'run'; i += 1) {
-    const input = longJump.botInput(state, 'ace', 0.8, at);
-    if (input?.f !== undefined) seen[input.f] += 1;
-    if (input) longJump.applyInput(state, 'ace', input, at);
-    longJump.step(state, 0.05, at);
-    at += 50;
+test('a strong bot hits green; a weak one settles for orange', () => {
+  for (const [difficulty, want] of [[1, KIND.PERFECT], [0, KIND.GOOD]]) {
+    const state = fresh();
+    const a = state.athletes.ace;
+    let at = live;
+    for (let i = 0; i < 400 && a.stage === 'run'; i += 1) {
+      const input = longJump.botInput(state, 'ace', difficulty, at);
+      if (input) longJump.applyInput(state, 'ace', input, at);
+      longJump.step(state, 0.05, at);
+      at += 50;
+    }
+    assert.equal(a.jumps.length, 1, `difficulty ${difficulty} never jumped`);
+    assert.equal(a.jumps[0].kind, want, `difficulty ${difficulty} landed in the wrong band`);
   }
-  assert.ok(seen[0] > 3 && seen[1] > 3, `the bot favoured one thumb: ${JSON.stringify(seen)}`);
-  assert.equal(a.stage, 'takeoff');
-  assert.ok(Math.abs(boardGap(a.takeoffX)) < 4.5, `the bot took off at ${a.takeoffX}`);
 });
 
 console.log(failures === 0 ? '\nall checks passed\n' : `\n${failures} check(s) failed\n`);

@@ -27,15 +27,10 @@ const lerp = (a, b, t) => a + (b - a) * t;
 const approach = (from, to, rate, dt) => lerp(from, to, 1 - Math.exp(-rate * dt));
 const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
 
-// The four poses every athlete is mixed from. Angles are radians on the rig
+// The three poses every athlete is mixed from. Angles are radians on the rig
 // joints; +x on a hip or a shoulder swings that limb toward the character's
 // front, which is also the direction of travel.
 //
-// GATHER is the two strides before the board compressed into one shape: hips
-// under, chest up, arms cocked back ready to throw upward. It is the pose the
-// player is holding while the dial sweeps, so it has to read as STORED energy —
-// a jumper standing straight there looks like a bug.
-const GATHER = { hipFront: 0.55, hipBack: -0.42, armFront: -0.5, armBack: -0.75, lean: 0.22, crouch: -0.16 };
 // HANG is the middle of the flight: chest open, arms high, one knee driven up.
 const HANG = { hipFront: 1.15, hipBack: -0.15, arm: 2.15, armSpread: 0.42, lean: -0.12 };
 // LAND is both legs thrown out front, arms swept forward for balance.
@@ -162,7 +157,7 @@ function createJumper(B, scene, player, lane, pit, opts) {
     dustGain: opts.dustGain,
     // Pose weights, eased rather than switched — a hard cut from the run into
     // the hang snaps the legs across in one frame.
-    w: { run: 0, gather: 0, air: 0, land: 0, idle: 1 },
+    w: { run: 0, air: 0, land: 0, idle: 1 },
     phase: 0,
     lean: IDLE.lean,
     bodyY: 0,
@@ -202,7 +197,6 @@ function poseJumper(r, sample, dt, clock) {
   // --- pose weights --------------------------------------------------------
   const want = {
     run: stage === 'run' && sample.v > 0.35 ? 1 : 0,
-    gather: stage === 'takeoff' ? 1 : 0,
     air: stage === 'flight' && landedU === 0 ? 1 : 0,
     land: stage === 'flight' && landedU > 0 ? 1 : 0,
     idle: 0,
@@ -213,7 +207,7 @@ function poseJumper(r, sample, dt, clock) {
   const rate = want.air ? 20 : 11;
   for (const key of Object.keys(r.w)) r.w[key] = approach(r.w[key], want[key], rate, dt);
 
-  const { run: runW, gather: gatherW, air: airW, land: landW, idle: idleW } = r.w;
+  const { run: runW, air: airW, land: landW, idle: idleW } = r.w;
   const speedN = clamp01(sample.v / MAX_SPEED);
 
   // --- stride cycle --------------------------------------------------------
@@ -228,13 +222,11 @@ function poseJumper(r, sample, dt, clock) {
   // --- limbs ---------------------------------------------------------------
   hips[-1].rotation.x =
     runW * (swing * swingAmp)
-    + gatherW * GATHER.hipFront
     + airW * HANG.hipFront
     + landW * LAND.hip
     + idleW * IDLE.hip;
   hips[1].rotation.x =
     runW * (-swing * swingAmp)
-    + gatherW * GATHER.hipBack
     + airW * HANG.hipBack
     + landW * LAND.hip
     + idleW * -IDLE.hip;
@@ -243,13 +235,11 @@ function poseJumper(r, sample, dt, clock) {
   const armAmp = 0.32 + speedN * 0.85;
   shoulders[-1].rotation.x =
     runW * (armBase - swing * armAmp)
-    + gatherW * GATHER.armBack
     + airW * HANG.arm
     + landW * LAND.arm
     + idleW * (IDLE.arm + breath * 0.1);
   shoulders[1].rotation.x =
     runW * (armBase + swing * armAmp)
-    + gatherW * GATHER.armFront
     + airW * HANG.arm
     + landW * LAND.arm
     + idleW * (IDLE.arm + breath * 0.1);
@@ -262,7 +252,6 @@ function poseJumper(r, sample, dt, clock) {
   // --- torso and head ------------------------------------------------------
   const lean =
     runW * (LEAN_BASE + speedN * LEAN_SPEED)
-    + gatherW * GATHER.lean
     + airW * HANG.lean
     + landW * LAND.lean
     + idleW * IDLE.lean;
@@ -278,7 +267,7 @@ function poseJumper(r, sample, dt, clock) {
 
   // --- height --------------------------------------------------------------
   const bounce = Math.abs(Math.cos(r.phase)) * 0.1 * speedN * runW;
-  r.bodyY = y + bounce + gatherW * GATHER.crouch + landW * LAND.sink;
+  r.bodyY = y + bounce + landW * LAND.sink;
   r.root.position.y = r.bodyY;
 
   // The shadow stays on the GROUND while the athlete does not: it spreads and
@@ -371,13 +360,6 @@ export function createLongJumpArena(B, canvas, { players, lanes, myId }) {
       wantTarget.set(RUNWAY_M * 0.55, 1.2, pit.centerZ);
       fov = 0.9;
       rate = 3;
-    } else if (view.stage === 'takeoff') {
-      // Low and close on the board — this is the frame the player is reading
-      // the dial against, and the foot has to be legible in it.
-      wantPos.set(view.x + 4.6, 1.9, z - 6.6);
-      wantTarget.set(view.x + 0.4, 1.15, z);
-      fov = 0.78;
-      rate = 5.5;
     } else if (view.stage === 'flight') {
       if (view.landedU > 0) {
         // The mark in the sand, with the tape beside it.
@@ -455,7 +437,7 @@ export function createLongJumpArena(B, canvas, { players, lanes, myId }) {
           // on the scoreboard has to be the one the sand agrees with.
           jumper.mark.position.x = pit.boardX + sample.f[3];
           jumper.mark.position.z = jumper.pivot.position.z;
-          jumper.mark.isVisible = sample.f[5] !== KIND.NO_JUMP;
+          jumper.mark.isVisible = sample.f[4] !== KIND.FOUL;
           jumper.markAge = 0;
         }
 

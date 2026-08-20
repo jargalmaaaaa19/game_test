@@ -22,7 +22,7 @@ export const pctFor = (x) => (x <= RUNWAY_M
  * The flat side view of the runway and the pit.
  *
  * What the event looked like before the stadium, and still what it looks like
- * on a device with no WebGL or no Babylon runtime. The rules, the dial and the
+ * on a device with no WebGL or no Babylon runtime. The rules, the gauge and the
  * measurements are identical; only the drawing is cheaper. One row per athlete,
  * so a player can still see the field around them.
  */
@@ -64,7 +64,6 @@ export default function LongJumpLanes({ players, myId, stripRef, laneRefs }) {
             data-stage="run"
             style={{ left: '0%', bottom: '14px' }}
             className="absolute h-4 w-2 -translate-x-1/2 rounded-sm bg-white will-change-[left,bottom]
-                       data-[stage='takeoff']:bg-amber-300
                        data-[stage='flight']:bg-emerald-400"
           />
         </div>
