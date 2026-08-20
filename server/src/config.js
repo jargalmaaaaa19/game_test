@@ -50,6 +50,22 @@ export const config = {
   tokenIssuer: process.env.USION_TOKEN_ISSUER || 'https://usions.com',
   tokenAudience: process.env.USION_TOKEN_AUDIENCE || process.env.USION_SERVICE_ID || '',
 
+  // The service's SECRET key (`usion_sk_...`): what authenticates THIS SERVICE
+  // to the platform, for registering the game and for any future server-side
+  // Usion API call.
+  //
+  // It plays no part in verifying a player's token — that is RS256 against the
+  // public JWKS above and needs no secret. So this is the one value in this
+  // file that is dangerous, and it gets treated differently:
+  //
+  //   never log it, never put it in a snapshot, never send it to a client.
+  //
+  // The startup line in index.js lists its fields one by one instead of dumping
+  // this object, and `handlers.js` builds the client catalog explicitly. Both
+  // are load-bearing now — keep them that way, and if you need to confirm the
+  // key is present, log whether it is SET, never what it is.
+  serviceKey: process.env.USION_SERVICE_KEY || '',
+
   // Dev conveniences. These are checked at every call site, not just declared —
   // a bot-fill flag that existed but was never read once hijacked real rooms.
   devTools: bool(process.env.DEV_TOOLS, false),

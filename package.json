@@ -7,7 +7,7 @@
     "node": ">=20"
   },
   "scripts": {
-    "dev": "node --watch server/src/index.js",
+    "dev": "node --watch --env-file-if-exists=.env server/src/index.js",
     "start": "node server/src/index.js"
   },
   "dependencies": {

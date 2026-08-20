@@ -41,6 +41,8 @@ http.listen(config.port, () => {
     authRequired: config.authRequired,
     devTools: config.devTools,
     uniqueFlags: config.uniqueFlags,
+    // WHETHER it is set, never what it is.
+    serviceKey: config.serviceKey ? 'set' : 'unset',
   });
   // Say the posture out loud, with the reason. The failure this replaces was
   // invisible from the logs: the box looked healthy and refused every player.

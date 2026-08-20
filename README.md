@@ -5,9 +5,14 @@ game. Node 20+, Socket.IO, no database — rooms live in process memory.
 
 ```bash
 npm install
-USION_AUTH_REQUIRED=false DEV_TOOLS=true npm run dev   # local
+cp .env.example .env                                   # then fill it in
+npm run dev                                            # loads .env (Node >=20.12)
 node tools/smoke.mjs                                   # 23-check E2E on the three lobby flows
 ```
+
+`npm start` does NOT read `.env` — deliberately. A host injects real environment
+variables, and a `.env` that silently overrode them in production would be a
+very quiet way to ship the wrong configuration.
 
 Client (React + Tailwind, Vite):
 
