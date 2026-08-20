@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   DISTANCE_M,
+  REACH_M,
+  cueAt,
   sideOf,
 } from '@shared/events/freestyle_swim.js';
 import { babylon } from '../avatar3d/portraits.js';
@@ -10,16 +12,19 @@ import { t, lang } from '../i18n.js';
 import Flag from './Flag.jsx';
 import SwimLanes from './SwimLanes.jsx';
 
-// How many cues of the queue are on screen, and how far apart they sit as a
-// percentage of the lane. Six is enough to read the next few strokes without
-// shrinking them to specks.
-const CUES_SHOWN = 6;
-const CUE_GAP = 15;
+// How much water the lane shows ahead of the swimmer, in METRES. The arrows
+// are pinned to marks on the pool, so this is a window onto the water rather
+// than a span of time — which is exactly why the lane can only scroll as fast
+// as the swimmer does.
+const LOOKAHEAD_M = 5;
 
-// Where the hit block sits across the lane, as a percentage of its width. The
-// cue at the front of the queue WAITS on it — the lane advances a slot when a
-// stroke lands, and not otherwise, which is what puts the pace in the player's
-// hands rather than a clock's.
+// Enough tiles to fill that window, plus the ones still sliding out past the
+// hit line behind it.
+const CUES_DRAWN = Math.ceil(LOOKAHEAD_M / 0.62) + 3;
+
+// Where the hit line sits across the lane, as a percentage of its width. An
+// arrow is struck as it crosses this; the shaded band around it is the window
+// the sim actually accepts.
 const HIT_AT = 18;
 
 // The cue tiles carry an arrow, not a word: "БАРУУН" does not fit in a tile a
@@ -36,22 +41,22 @@ const MEDAL_TONE = ['#ffd23f', '#dbe4ee', '#e8834a'];
 /**
  * 50m Backstroke.
  *
- * A queue of cues waits at the hit block; press the matching side whenever you
- * have read the one at the front, and the line comes forward a slot. Nothing
- * arrives on a clock and nothing gets away, so the lane runs at the swimmer's
- * pace — which is the whole point of it being a queue rather than a stream.
+ * A piano roll pinned to the pool: every arrow is a mark on the water, and the
+ * lane scrolls because the swimmer moves. Strike them as they cross the hit
+ * line — early pays more than late — and the whole row speeds up under you; let
+ * one go by and the water takes speed back and it all slows down.
  *
- * That also decides who draws what. The QUEUE is React's: it moves a few times
- * a second, so it is rendered from `mine.b` and slid by a CSS transition. The
- * POOL is the arena's, on rAF, because swimmers move every frame. Distance,
- * combo, times and the standings sit on an interval, because a hidden tab stops
- * rAF dead and a frozen scoreboard reads as a crash. (Archery taught that one.)
+ * The lane is therefore ANIMATION and lives on rAF beside the pool, drawn from
+ * the swimmer's own interpolated position. Distance, combo, times and the
+ * standings sit on an interval, because a hidden tab stops rAF dead and a
+ * frozen scoreboard reads as a crash. (Archery taught that one.)
  */
 export default function SwimScreen({ room, me, netRef, sendInput, event }) {
   const rootRef = useRef(null);
   const canvasRef = useRef(null);
   const arenaRef = useRef(null);
   const laneRefs = useRef(new Map()); // flat fallback only
+  const cueRefs = useRef([]);
   const judgeRef = useRef(null);
   const clockRef = useRef(null);
   const placeRef = useRef(null);
@@ -272,10 +277,26 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
 
       if (!a) return;
 
-      // The queue itself is not drawn here: it moves a slot per stroke, a few
-      // times a second, so it is React's to render and CSS's to slide. Sixty
-      // frames a second of a row that changes four times a second would be
-      // sixty frames a second of nothing.
+      // The lane, drawn from the swimmer's own position. Every arrow is a mark
+      // on the water at `cueAt(i)` metres, so the whole row slides left exactly
+      // as fast as the swimmer advances — press well and it speeds up under
+      // you, miss and it slows down. Nothing here is on a clock.
+      const swum = drawn[myId]?.x ?? a.x ?? 0;
+      for (let k = 0; k < CUES_DRAWN; k += 1) {
+        const node = cueRefs.current[k];
+        if (!node) continue;
+        const index = a.b + k;
+        const ahead = cueAt(index) - swum;
+        if (ahead > LOOKAHEAD_M || ahead < -REACH_M * 3) {
+          node.style.opacity = '0';
+          continue;
+        }
+        const side = sideOf(latest.sides, index);
+        node.style.opacity = '1';
+        node.style.left = `${(HIT_AT + (ahead / LOOKAHEAD_M) * (100 - HIT_AT)).toFixed(2)}%`;
+        node.dataset.cue = side === 0 ? 'left' : 'right';
+        node.textContent = side === 0 ? ARROW.left : ARROW.right;
+      }
 
       // The judgement flash fades on its own so it does not linger.
       if (judgeRef.current) {
@@ -369,32 +390,23 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
             className="absolute inset-y-2 w-16 -translate-x-1/2 rounded-xl border-2 border-white/40 bg-white/10"
             style={{ left: `${HIT_AT}%` }}
           />
-          {/* The queue. Each cue is keyed by its ABSOLUTE index, so answering
-              one unmounts the head, leaves every other tile in place, and lets
-              CSS slide them all one slot to the left. One spare is rendered off
-              the right edge so the arrow joining the back of the queue slides
-              in rather than appearing out of nothing. */}
-          {Array.from({ length: CUES_SHOWN + 1 }, (_, k) => {
-            const index = (mine?.b ?? 0) + k;
-            const side = sideOf(snap?.sides, index);
-            return (
-              <div
-                key={index}
-                data-cue={side === 0 ? 'left' : 'right'}
-                style={{
-                  left: `${HIT_AT + k * CUE_GAP}%`,
-                  opacity: k === 0 ? 1 : Math.max(0.3, 1 - k * 0.13),
-                }}
-                className="absolute top-1/2 grid h-11 w-11 -translate-x-1/2 -translate-y-1/2 place-items-center
-                           rounded-xl text-lg font-bold leading-none will-change-[left]
-                           transition-[left,opacity] duration-150 ease-out
-                           data-[cue=left]:bg-yellow-400 data-[cue=left]:text-neutral-950
-                           data-[cue=right]:bg-blue-400 data-[cue=right]:text-neutral-950"
-              >
-                {side === 0 ? ARROW.left : ARROW.right}
-              </div>
-            );
-          })}
+          {/* The arrows. Plain nodes the render loop writes `left` on sixty
+              times a second — they are animation, and a keyed React list that
+              re-rendered the lane on every frame would cost more than the pool
+              it sits under. NO css transition: the position is already the
+              truth every frame, and easing it would put the tile somewhere the
+              sim disagrees with. */}
+          {Array.from({ length: CUES_DRAWN }, (_, k) => (
+            <div
+              key={k}
+              ref={(node) => { cueRefs.current[k] = node; }}
+              style={{ opacity: 0, left: '100%' }}
+              className="absolute top-1/2 grid h-11 w-11 -translate-x-1/2 -translate-y-1/2 place-items-center
+                         rounded-xl text-lg font-bold leading-none will-change-[left]
+                         data-[cue=left]:bg-yellow-400 data-[cue=left]:text-neutral-950
+                         data-[cue=right]:bg-blue-400 data-[cue=right]:text-neutral-950"
+            />
+          ))}
           <p
             ref={judgeRef}
             data-grade="none"

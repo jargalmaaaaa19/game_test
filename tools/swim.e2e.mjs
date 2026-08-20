@@ -5,7 +5,7 @@
 //   node tools/swim.e2e.mjs
 
 import { io } from 'socket.io-client';
-import { sideOf } from '../shared/events/freestyle_swim.js';
+import { promptnessAt, sideOf } from '../shared/events/freestyle_swim.js';
 
 const URL = process.env.SMOKE_URL || 'http://localhost:3200';
 
@@ -44,29 +44,28 @@ const waitFor = (s, event, ms = 90_000) =>
  * nothing but a tick. Under the old timed stream that lag was most of the
  * window and the swimmer had to predict the beat instead.
  */
-function autoSwimmer(socket, playerId, { gap = 260, wrongEvery = 0 }, play, clock) {
+/**
+ * Plays like the real client: watches its own position down the pool and
+ * strikes each arrow as it crosses. `aim` is WHERE in the window the stroke
+ * lands — 1 is the earliest it can be made, 0 is scraping the far edge — which
+ * is the whole skill of the event.
+ */
+function autoSwimmer(socket, playerId, { aim = 0.8, wrongEvery = 0 }, play, clock) {
   let strokes = 0;
-  let beat = 0;
-  let done = false;
-
   socket.on('game:snapshot', ({ s }) => {
     const a = s.a?.[playerId];
-    if (!a) return;
-    if (a.d) done = true;
-    beat = a.b;
-  });
+    if (!a || a.d) return;
+    if (clock() < s.s) return;
 
-  const stroke = () => {
-    if (done) return;
-    if (clock() >= play.state.s) {
-      strokes += 1;
-      const correct = sideOf(play.state.sides, beat);
-      const wrong = wrongEvery && strokes % wrongEvery === 0;
-      socket.emit('game:input', { s: wrong ? 1 - correct : correct });
-    }
-    setTimeout(stroke, gap);
-  };
-  setTimeout(stroke, Math.max(0, play.state.s - clock()));
+    // The arrows are marks on the water, so the only question is where the
+    // swimmer IS — no clock, no prediction, nothing to time against.
+    const p = promptnessAt(a.b, a.x);
+    if (p === null || p > aim) return;
+    strokes += 1;
+    const correct = sideOf(play.state.sides, a.b);
+    const wrong = wrongEvery && strokes % wrongEvery === 0;
+    socket.emit('game:input', { s: wrong ? 1 - correct : correct });
+  });
 }
 
 const run = async () => {
@@ -97,8 +96,8 @@ const run = async () => {
   const offset = play.t - Date.now();
   const clock = () => Date.now() + offset;
 
-  autoSwimmer(host, room.playerId, { gap: 260 }, play, clock);
-  autoSwimmer(guest, j1.playerId, { gap: 520 }, play, clock); // correct, but a laboured cadence
+  autoSwimmer(host, room.playerId, { aim: 0.9 }, play, clock);
+  autoSwimmer(guest, j1.playerId, { aim: 0.1 }, play, clock); // correct, but always late
   // `idle` never strokes.
 
   let last = null;
@@ -111,10 +110,15 @@ const run = async () => {
   const state = Object.fromEntries(Object.entries(last?.a ?? {}).map(([id, a]) => [name[id], a]));
 
   check('the on-beat swimmer finished', state.ace?.d === 1, state.ace);
-  check('the idle swimmer never left the wall', state.idle?.x === 0 && state.idle?.d === 0, state.idle);
-  // The queue WAITS. An idle swimmer's cue is still cue zero at the end of the
-  // round — the water is what punished them, not a stack of charged misses.
-  check('an idle swimmer loses no cues, only the race', state.idle?.b === 0, state.idle?.b);
+  check('the idle swimmer never finished', state.idle?.d === 0, state.idle);
+  // The arrows are pinned to the water, so an idle swimmer glides past a few on
+  // the push off the wall and then stops — charged for those, and no more.
+  // The push off the wall carries them a few metres against quadratic drag,
+  // charged for every arrow they drift past, and they never get near the far
+  // end. A third of the pool is the honest bound; five metres was a guess.
+  check('an idle swimmer glides, is charged, and never finishes',
+    state.idle?.b > 0 && state.idle?.x < 50 / 3,
+    { beat: state.idle?.b, x: state.idle?.x });
   check(
     'on-beat beat late',
     state.late?.d === 1 ? state.ace.t < state.late.t : state.ace.x > state.late.x,

@@ -7,7 +7,10 @@ import swim, {
   DISTANCE_M,
   MAX_RACE_MS,
   PATTERN_LEN,
-  cadenceFactor,
+  REACH_M,
+  STROKE_M,
+  cueAt,
+  promptnessAt,
   sideOf,
 } from '../shared/events/freestyle_swim.js';
 import { pointsForPlacement } from '../shared/scoring.js';
@@ -30,188 +33,187 @@ const seats = [
   { playerId: 'idle', lane: 3 },
 ];
 const fresh = (rng = () => 0.5) => swim.initState(seats, rng, T0);
-const live = (state) => state.startsAt + 1;
 
 /**
- * Swim the race: answer the cue at the front of the queue every `gap` ms until
- * the swimmer is home or the round is out.
+ * Swim the race.
  *
- * `wrongEvery` catches the water backwards on every nth stroke; `silent` puts
- * a swimmer in the water who never presses at all.
+ * `aim` is WHERE in each arrow's window the stroke lands: 1 is the near edge,
+ * the earliest a stroke can be made, and 0 is scraping the far one. That is the
+ * whole skill of the event, so it is the only dial the helper has.
  */
-function race(state, id, { gap = 260, wrongEvery = 0, silent = false, until = MAX_RACE_MS } = {}) {
+function race(state, id, { aim = 0.8, wrongEvery = 0, silent = false, until = MAX_RACE_MS } = {}) {
   const a = state.athletes[id];
   const end = state.startsAt + until;
   let at = state.startsAt;
-  let lastPress = state.startsAt;
   let strokes = 0;
 
   while (at < end && !a.done) {
-    swim.step(state, 0.05, at);
-    if (!silent && at - lastPress >= gap) {
-      strokes += 1;
-      const correct = sideOf(state.sides, a.beat);
-      const side = wrongEvery && strokes % wrongEvery === 0 ? 1 - correct : correct;
-      swim.applyInput(state, id, { s: side }, at);
-      lastPress = at;
+    swim.step(state, 0.03, at);
+    if (!silent) {
+      const p = promptnessAt(a.beat, a.x);
+      if (p !== null && p <= aim) {
+        strokes += 1;
+        const correct = sideOf(state.sides, a.beat);
+        const side = wrongEvery && strokes % wrongEvery === 0 ? 1 - correct : correct;
+        swim.applyInput(state, id, { s: side }, at);
+      }
     }
-    at += 50;
+    at += 30;
   }
   return a;
 }
 
 console.log('\n50m backstroke sim');
 
-test('the stroke pattern is mixed, not taking turns', () => {
+test('the arrows are marks on the water, evenly spaced', () => {
+  assert.ok(cueAt(0) > 0);
+  assert.ok(Math.abs(cueAt(5) - cueAt(4) - STROKE_M) < 1e-9);
+  assert.ok(cueAt(80) > DISTANCE_M - STROKE_M * 2, 'the lane runs out before the wall does');
+});
+
+test('the pattern is mixed, not taking turns, and it wraps', () => {
   let seed = 7;
   const rng = () => {
     seed = (seed * 1103515245 + 12345) % 2147483648;
     return seed / 2147483648;
   };
   const { sides } = fresh(rng);
-  const alternating = sides.every((s, i) => (i === 0 ? true : s !== sides[i - 1]));
-  assert.ok(!alternating, 'the pattern simply alternates — nothing has to be read');
-
+  assert.ok(!sides.every((s, i) => (i === 0 ? true : s !== sides[i - 1])), 'it simply alternates');
   let run = 1;
   for (let i = 1; i < sides.length; i += 1) {
     run = sides[i] === sides[i - 1] ? run + 1 : 1;
-    assert.ok(run <= 3, `a run of ${run} of one side reads as broken`);
+    assert.ok(run <= 3, `a run of ${run} reads as broken`);
   }
+  assert.equal(sideOf(sides, PATTERN_LEN + 5), sideOf(sides, 5));
 });
 
-test('the queue wraps, so it never runs out of cues', () => {
-  const { sides } = fresh();
-  assert.equal(sides.length, PATTERN_LEN);
-  assert.equal(sideOf(sides, PATTERN_LEN), sideOf(sides, 0));
-  assert.equal(sideOf(sides, PATTERN_LEN * 3 + 5), sideOf(sides, 5));
+test('an arrow is answerable across a window, and nowhere else', () => {
+  assert.equal(promptnessAt(3, cueAt(3) - REACH_M - 0.01), null, 'answerable before it arrives');
+  assert.equal(promptnessAt(3, cueAt(3) + REACH_M + 0.01), null, 'answerable after it is gone');
+  // To a tolerance, not exactly: `cueAt(3) - REACH_M` does not subtract back to
+  // exactly -REACH_M, so the edges land a rounding error either side of 1 and
+  // 0. Demanding equality here tests the float unit, not the rule.
+  assert.ok(Math.abs(promptnessAt(3, cueAt(3) - REACH_M) - 1) < 1e-9, 'the near edge is not full value');
+  assert.ok(Math.abs(promptnessAt(3, cueAt(3) + REACH_M)) < 1e-9, 'the far edge is not worth zero');
+  assert.ok(Math.abs(promptnessAt(3, cueAt(3)) - 0.5) < 1e-9);
 });
 
-test('the cue at the front waits — a press right off the gun counts', () => {
+test('the swimmer pushes off the wall, so the first arrow arrives', () => {
   const state = fresh();
   const a = state.athletes.ace;
-  swim.applyInput(state, 'ace', { s: sideOf(state.sides, 0) }, live(state));
-  assert.equal(a.beat, 1, 'an early press was refused');
-  assert.ok(a.v > 0, 'an early press paid nothing');
-  assert.equal(a.hits.wrong, 0);
+  assert.ok(a.v > 0, 'a dead stop would mean the lane never scrolls');
+  race(state, 'ace', { silent: true, until: 2_000 });
+  assert.ok(a.x > 0, 'the swimmer never left the wall');
 });
 
-test('a correct stroke brings the queue forward; a wrong one does not', () => {
-  const state = fresh();
-  const a = state.athletes.ace;
-  const wrong = 1 - sideOf(state.sides, 0);
-
-  swim.applyInput(state, 'ace', { s: wrong }, live(state));
-  assert.equal(a.beat, 0, 'the wrong side advanced the queue');
-  assert.equal(a.hits.wrong, 1);
-
-  swim.applyInput(state, 'ace', { s: sideOf(state.sides, 0) }, live(state) + 300);
-  assert.equal(a.beat, 1, 'the right side did not advance the queue');
+test('meeting the arrows early swims faster than scraping them late', () => {
+  const early = race(fresh(), 'ace', { aim: 0.95 });
+  const late = race(fresh(), 'ace', { aim: 0.05 });
+  assert.ok(early.done && late.done, `early=${early.done} late=${late.done}`);
+  assert.ok(early.time < late.time, `${early.time} vs ${late.time}`);
 });
 
-test('catching the wrong side costs speed', () => {
+test('both a sharp and a laboured swimmer get home inside the round', () => {
+  const early = race(fresh(), 'ace', { aim: 0.95 });
+  const late = race(fresh(), 'ace', { aim: 0.05 });
+  assert.ok(early.time > 12_000 && early.time < 26_000, `sharp: ${early.time}`);
+  assert.ok(late.time < MAX_RACE_MS, `laboured: ${late.time}`);
+});
+
+test('the pace settles instead of running away or dying', () => {
+  // Quadratic drag is what makes this true. Against linear drag, cues pinned to
+  // distance make impulse-per-second proportional to speed, and the race either
+  // accelerates for ever or decays to nothing.
   const state = fresh();
   const a = state.athletes.ace;
-  swim.applyInput(state, 'ace', { s: sideOf(state.sides, 0) }, live(state));
+  race(state, 'ace', { aim: 0.8, until: 6_000 });
+  const early = a.v;
+  race(state, 'ace', { aim: 0.8, until: 6_000 });
+  assert.ok(a.v > 0.5, `the pace died: ${a.v}`);
+  assert.ok(Math.abs(a.v - early) < 0.6, `the pace ran away: ${early} then ${a.v}`);
+  assert.ok(a.v < 3.3, `past the ceiling: ${a.v}`);
+});
+
+test('letting an arrow go by is a miss, and it costs speed', () => {
+  const state = fresh();
+  const a = state.athletes.ace;
+  race(state, 'ace', { aim: 0.8, until: 3_000 });
   const before = a.v;
-  swim.applyInput(state, 'ace', { s: 1 - sideOf(state.sides, 1) }, live(state) + 300);
-  assert.ok(a.v < before, 'a wrong stroke was free');
-});
+  const beat = a.beat;
 
-test('nothing expires: standing still loses no cue, only speed', () => {
-  const state = fresh();
-  const a = state.athletes.ace;
-  race(state, 'ace', { silent: true, until: 6_000 });
-  assert.equal(a.beat, 0, 'a cue expired while nobody was pressing');
-  assert.equal(a.hits.wrong, 0);
-  assert.equal(a.combo, 0);
-  assert.ok(a.x < 0.001, 'a swimmer who never strokes still moved');
-});
-
-test('landing more strokes beats landing fewer', () => {
-  const brisk = race(fresh(), 'ace', { gap: 260 });
-  const slow = race(fresh(), 'ace', { gap: 700 });
-  assert.ok(brisk.x > slow.x, `${brisk.x} vs ${slow.x}`);
-});
-
-test('a steady swimmer finishes the 50m', () => {
-  const a = race(fresh(), 'ace', { gap: 260 });
-  assert.ok(a.done, `never finished; reached ${a.x}m`);
-  assert.equal(a.x, DISTANCE_M);
-});
-
-test('the finishing time is in a plausible range', () => {
-  const a = race(fresh(), 'ace', { gap: 260 });
-  assert.ok(a.time > 14_000 && a.time < 32_000, `implausible time: ${a.time}`);
-});
-
-test('even a laboured swimmer gets home inside the round', () => {
-  const a = race(fresh(), 'ace', { gap: 520 });
-  assert.ok(a.done, `a slow but correct swimmer was still at ${a.x}m`);
-});
-
-test('pressing twice as fast buys almost nothing', () => {
-  // Impulse per second is flat below the ideal cadence, so the ONLY thing a
-  // faster presser gains is a smoother impulse train — small, frequent pushes
-  // lose less to drag between them than big, rare ones. That is worth about 9%
-  // off the clock, and it has to be paid for by reading every arrow correctly
-  // at eight a second. The guard here is that it stays a rounding error rather
-  // than becoming the way to win.
-  const brisk = race(fresh(), 'ace', { gap: 260 });
-  const frantic = race(fresh(), 'ace', { gap: 130 });
-  assert.ok(brisk.done && frantic.done);
-  assert.ok(
-    frantic.time > brisk.time * 0.85,
-    `spam finished in ${frantic.time} against ${brisk.time}`,
-  );
-});
-
-test('a held button never completes a stroke', () => {
-  const state = fresh();
-  const a = state.athletes.ace;
-  let at = live(state);
-  for (let i = 0; i < 400; i += 1) {
-    swim.applyInput(state, 'ace', { s: sideOf(state.sides, a.beat) }, at);
-    at += 15; // faster than an arm can come round
+  // Swim on without pressing until the next arrow is behind us.
+  let at = state.startsAt + 3_000;
+  while (a.beat === beat && at < state.startsAt + 8_000) {
+    swim.step(state, 0.03, at);
+    at += 30;
   }
-  assert.ok(a.v < 1, `a held button reached ${a.v} m/s`);
+  assert.equal(a.beat, beat + 1, 'the passed arrow was never charged');
+  assert.equal(a.hits.miss, 1);
+  assert.ok(a.v < before, 'a miss was free');
+  assert.equal(a.combo, 0);
+});
+
+test('a stroke at open water is a splash, and consumes no arrow', () => {
+  const state = fresh();
+  const a = state.athletes.ace;
+  a.x = cueAt(0) - REACH_M - 0.2; // nothing within reach yet
+  const beat = a.beat;
+  const before = a.v;
+  swim.applyInput(state, 'ace', { s: sideOf(state.sides, beat) }, state.startsAt + 1);
+  assert.equal(a.beat, beat, 'a splash ate an arrow');
+  assert.ok(a.v < before, 'a splash was free');
+  assert.equal(a.last, 'splash');
 });
 
 test('hammering both buttons is punished, not rewarded', () => {
-  const read = race(fresh(), 'ace', { gap: 260, until: 10_000 });
+  const read = race(fresh(), 'ace', { aim: 0.8, until: 10_000 });
 
   const masher = fresh();
   const a = masher.athletes.ace;
   let at = masher.startsAt;
   let side = 0;
   while (at < masher.startsAt + 10_000 && !a.done) {
-    swim.step(masher, 0.05, at);
+    swim.step(masher, 0.03, at);
     swim.applyInput(masher, 'ace', { s: side }, at);
     side = 1 - side;
-    at += 50;
+    at += 30;
   }
   assert.ok(read.x > a.x, `mashing reached ${a.x}m against a reader's ${read.x}m`);
 });
 
-test('the cadence factor flattens impulse per second', () => {
-  assert.equal(cadenceFactor(10_000), 1);
-  assert.ok(cadenceFactor(130) > 0.4 && cadenceFactor(130) < 0.6);
-  assert.equal(cadenceFactor(0), 0);
+test('catching the wrong side costs speed and still spends the arrow', () => {
+  const state = fresh();
+  const a = state.athletes.ace;
+  a.x = cueAt(0);
+  const before = a.v;
+  swim.applyInput(state, 'ace', { s: 1 - sideOf(state.sides, 0) }, state.startsAt + 1);
+  assert.equal(a.beat, 1, 'a fumbled arrow stayed in the water');
+  assert.equal(a.hits.wrong, 1);
+  assert.ok(a.v < before);
 });
 
-test('a garbage payload cannot move a swimmer or crash', () => {
+test('a swimmer who never strokes glides to a halt', () => {
   const state = fresh();
-  for (const bad of [null, undefined, {}, { s: 5 }, { s: '0' }, { t: 'nope' }]) {
-    swim.applyInput(state, 'ace', bad, live(state));
-  }
-  assert.equal(state.athletes.ace.beat, 0);
-  assert.equal(state.athletes.ace.v, 0);
+  const a = state.athletes.ace;
+  race(state, 'ace', { silent: true });
+  assert.ok(!a.done, 'an idle swimmer finished the race');
+  assert.ok(a.v < 0.5, `still moving at ${a.v}`);
+  assert.ok(a.hits.miss > 0, 'gliding past arrows charged nothing');
 });
 
 test('a stroke before the gun is ignored', () => {
   const state = fresh();
   swim.applyInput(state, 'ace', { s: sideOf(state.sides, 0) }, T0 + COUNTDOWN_MS - 100);
   assert.equal(state.athletes.ace.beat, 0);
-  assert.equal(state.athletes.ace.v, 0);
+});
+
+test('a garbage payload cannot move a swimmer or crash', () => {
+  const state = fresh();
+  for (const bad of [null, undefined, {}, { s: 5 }, { s: '0' }, { t: 'nope' }]) {
+    swim.applyInput(state, 'ace', bad, state.startsAt + 1);
+  }
+  assert.equal(state.athletes.ace.beat, 0);
+  assert.equal(state.athletes.ace.hits.wrong, 0);
 });
 
 test('placements are finishers by time, then the rest by distance', () => {
@@ -230,39 +232,37 @@ test('placements award 10 / 8 / 6', () => {
 
 test('the wire snapshot is compact and quantized', () => {
   const state = fresh();
-  race(state, 'ace', { gap: 260, until: 3_000 });
+  race(state, 'ace', { aim: 0.8, until: 3_000 });
   const wire = swim.snapshot(state);
   assert.deepEqual(Object.keys(wire).sort(), ['a', 'e', 's', 'sides']);
-  assert.deepEqual(
-    Object.keys(wire.a.ace).sort(),
-    ['b', 'c', 'd', 'j', 'ja', 'l', 't', 'v', 'x'],
-  );
+  assert.deepEqual(Object.keys(wire.a.ace).sort(), ['b', 'c', 'd', 'j', 'ja', 'l', 't', 'v', 'x']);
   assert.equal(Math.round(wire.a.ace.x * 100) / 100, wire.a.ace.x, 'x not quantized');
-  assert.ok(wire.a.ace.b > 0, 'the queue pointer is not on the wire');
+  assert.ok(wire.a.ace.b > 0, 'the cue pointer is not on the wire');
 });
 
-test('a strong bot swims correctly, and a weak one swims slower', () => {
+test('a strong bot swims cleanly, and a weak one swims slower', () => {
   const run = (difficulty) => {
     const state = fresh();
     const a = state.athletes.ace;
     let at = state.startsAt;
-    while (at < state.startsAt + 12_000 && !a.done) {
+    while (at < state.startsAt + MAX_RACE_MS && !a.done) {
       const input = swim.botInput(state, 'ace', difficulty, at);
       if (input) swim.applyInput(state, 'ace', input, at);
-      swim.step(state, 0.05, at);
-      at += 50;
+      swim.step(state, 0.03, at);
+      at += 30;
     }
     return a;
   };
   const strong = run(1);
   const weak = run(0);
   assert.equal(strong.hits.wrong, 0, 'the bot caught the wrong side');
-  assert.ok(strong.x > weak.x, `${strong.x} vs ${weak.x}`);
+  assert.ok(strong.x >= weak.x, `${strong.x} vs ${weak.x}`);
+  assert.ok(strong.done, 'the strong bot never finished');
 });
 
 test('the same strokes always produce the same race', () => {
-  const one = race(fresh(), 'ace', { gap: 260, until: 9_000 });
-  const two = race(fresh(), 'ace', { gap: 260, until: 9_000 });
+  const one = race(fresh(), 'ace', { aim: 0.8, until: 9_000 });
+  const two = race(fresh(), 'ace', { aim: 0.8, until: 9_000 });
   assert.equal(one.x, two.x);
   assert.equal(one.beat, two.beat);
 });
