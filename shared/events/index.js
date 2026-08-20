@@ -57,7 +57,7 @@ export const EVENT_CATALOG = [
   },
   {
     id: 'freestyle_swim',
-    name: { en: '50m Freestyle', mn: '50м чөлөөт сэлэлт' },
+    name: { en: '50m Backstroke', mn: '50м нуруун сэлэлт' },
     input: INPUT_SCHEME.RHYTHM,
     scoring: 'lowest_time',
     durationMs: 45_000,

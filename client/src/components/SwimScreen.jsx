@@ -3,7 +3,7 @@ import {
   BEAT_MS,
   DISTANCE_M,
   TOTAL_BEATS,
-  REACT_MS,
+  HIT_WINDOW_MS,
   beatTime,
   sideOf,
 } from '@shared/events/freestyle_swim.js';
@@ -14,10 +14,20 @@ import { t, lang } from '../i18n.js';
 import Flag from './Flag.jsx';
 import SwimLanes from './SwimLanes.jsx';
 
-// How far ahead the cue lane shows. Two and a bit beats is enough to read the
-// next stroke without turning the screen into sheet music.
-const LOOKAHEAD_MS = BEAT_MS * 2.6;
-const CUES_DRAWN = 5;
+// How long a cue takes to cross the lane. Set in MILLISECONDS rather than as a
+// multiple of the beat, because the two things it controls pull apart: this is
+// the scroll SPEED, while speed x BEAT_MS is the GAP between cues. Tying it to
+// the beat meant the arrows could not be brought closer together without also
+// slowing them down.
+const LOOKAHEAD_MS = 1_400;
+
+// Enough to cover the lookahead plus the ones still flowing out past the zone.
+const CUES_DRAWN = Math.ceil(LOOKAHEAD_MS / BEAT_MS) + 3;
+
+// How long a struck or spent cue keeps travelling before it is recycled. Cues
+// flow THROUGH the hit zone and off the end; they used to stop dead on it and
+// pile up, which read as the lane jamming.
+const FLOW_PAST_MS = 420;
 
 // Where the hit line sits across the cue lane, as a percentage of its width.
 // Cues enter at 100% and are struck here.
@@ -278,7 +288,7 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
       // further along: the pointer, or the first cue the clock says is alive.
       const firstAlive = Math.max(
         0,
-        Math.ceil((sNow - beatTime(latest.s, 0) - REACT_MS) / BEAT_MS),
+        Math.ceil((sNow - beatTime(latest.s, 0) - HIT_WINDOW_MS) / BEAT_MS),
       );
       const base = Math.max(a.b, firstAlive);
 
@@ -299,27 +309,24 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
           continue;
         }
         const until = beatTime(latest.s, index) - sNow;
-        if (until > LOOKAHEAD_MS || until < -REACT_MS) {
+        if (until > LOOKAHEAD_MS || until < -FLOW_PAST_MS) {
           node.style.opacity = '0';
           continue;
         }
 
-        // Every cue carries its arrow the whole way down the lane, so the next
-        // few strokes can be read before they arrive and the hands can already
-        // be on the right side when one lands. What the approach does NOT buy
-        // is a head start: the window still opens the instant the cue reaches
-        // the line, and a press before that is a splash. Knowing which side is
-        // coming is preparation; the score is still how fast you answer it.
+        // NOT clamped at the hit zone. Letting `until` go negative is what
+        // carries a cue on through the zone and out of the lane; clamping it
+        // parked every spent cue on the line in a heap.
         //
-        // A cue that has landed stops on the line and lights up; the ones still
-        // coming ride in muted, so which one is live is never in question.
-        const landed = until <= 0;
+        // And one steady colour per side, all the way across — no muted-to-lit
+        // switch as it arrives. The switch was a colour change on a 75ms
+        // transition happening every 380ms, which is a strobe, and with the
+        // cues this close together several of them were doing it at once.
         const side = sideOf(latest.sides, index);
-        const face = side === 0 ? 'left' : 'right';
         node.style.opacity = '1';
         node.style.left =
-          `${(HIT_AT + (Math.max(until, 0) / LOOKAHEAD_MS) * (100 - HIT_AT)).toFixed(2)}%`;
-        node.dataset.cue = landed ? face : `next-${face}`;
+          `${(HIT_AT + (until / LOOKAHEAD_MS) * (100 - HIT_AT)).toFixed(2)}%`;
+        node.dataset.cue = side === 0 ? 'left' : 'right';
         node.textContent = side === 0 ? ARROW.left : ARROW.right;
       }
 
@@ -407,8 +414,12 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
             arenaOk ? 'border-white/15 bg-black/55' : 'mt-5 border-neutral-800 bg-neutral-900/70',
           ].join(' ')}
         >
+          {/* The hit zone is the only thing that marks WHERE to press, and it
+              never changes — the cues stream through it. Making the cue light
+              up instead put the signal on a moving object that changes several
+              times a second. */}
           <div
-            className="absolute inset-y-2 w-14 -translate-x-1/2 rounded-xl border border-white/25 bg-white/10"
+            className="absolute inset-y-2 w-16 -translate-x-1/2 rounded-xl border-2 border-white/40 bg-white/10"
             style={{ left: `${HIT_AT}%` }}
           />
           {Array.from({ length: CUES_DRAWN }, (_, k) => (
@@ -417,16 +428,9 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
               ref={(node) => { cueRefs.current[k] = node; }}
               style={{ opacity: 0, left: '100%' }}
               className="absolute top-1/2 grid h-11 w-11 -translate-x-1/2 -translate-y-1/2 place-items-center
-                         rounded-xl text-lg font-bold leading-none will-change-[left] transition-colors
-                         duration-75
-                         data-[cue=next-left]:border-2 data-[cue=next-left]:border-amber-300/60
-                         data-[cue=next-left]:bg-amber-400/20 data-[cue=next-left]:text-amber-200
-                         data-[cue=next-right]:border-2 data-[cue=next-right]:border-violet-300/60
-                         data-[cue=next-right]:bg-violet-400/20 data-[cue=next-right]:text-violet-200
-                         data-[cue=left]:bg-amber-400 data-[cue=left]:text-neutral-950
-                         data-[cue=left]:ring-4 data-[cue=left]:ring-amber-300/50
-                         data-[cue=right]:bg-violet-400 data-[cue=right]:text-neutral-950
-                         data-[cue=right]:ring-4 data-[cue=right]:ring-violet-300/50"
+                         rounded-xl text-lg font-bold leading-none will-change-[left]
+                         data-[cue=left]:bg-yellow-400 data-[cue=left]:text-neutral-950
+                         data-[cue=right]:bg-blue-400 data-[cue=right]:text-neutral-950"
             />
           ))}
           <p
@@ -511,9 +515,11 @@ function RankMarker({ rank, player, nodeRef, distRef }) {
 }
 
 function StrokeButton({ side, label, glass }) {
+  // Same hues as the cue tiles above them, so a button and the arrows it
+  // answers are read as one thing.
   const tint = side === 0
-    ? 'border-amber-300/70 bg-amber-400/20 text-amber-100 active:bg-amber-400/45'
-    : 'border-violet-300/70 bg-violet-400/20 text-violet-100 active:bg-violet-400/45';
+    ? 'border-yellow-300/70 bg-yellow-400/20 text-yellow-100 active:bg-yellow-400/45'
+    : 'border-blue-300/70 bg-blue-400/20 text-blue-100 active:bg-blue-400/45';
   return (
     <button
       type="button"

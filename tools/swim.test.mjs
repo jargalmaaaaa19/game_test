@@ -7,7 +7,7 @@ import swim, {
   COUNTDOWN_MS,
   DISTANCE_M,
   LEAD_IN_MS,
-  REACT_MS,
+  HIT_WINDOW_MS,
   TIER,
   TOTAL_BEATS,
   beatTime,
@@ -36,24 +36,30 @@ const seats = [
 const fresh = (rng = () => 0.5) => swim.initState(seats, rng, T0);
 
 /**
- * Swim a whole race deterministically. `offset` is how far off the beat this
- * swimmer presses; `wrongEvery` makes them catch the wrong side periodically.
+ * Swim a whole race deterministically.
+ *
+ *   offset      how far off the beat this swimmer presses, either sign
+ *   wrongEvery  catch the wrong side every nth stroke
+ *   everyNth    only bother with every nth cue, letting the rest flow past —
+ *               this is what "lands fewer strokes" means now that volume is
+ *               what the event pays for
  */
-function race(state, id, { offset = 0, wrongEvery = 0, silent = false } = {}) {
-  // `offset` is now REACTION TIME: how long after the cue lands this swimmer
-  // answers it. Zero is a superhuman reflex, and deliberately allowed here so
-  // the ceiling is testable.
+function race(state, id, { offset = 0, wrongEvery = 0, everyNth = 1, silent = false } = {}) {
   const tick = 50;
   let strokes = 0;
+  let seen = 0;
   for (let now = state.startsAt; now <= state.endsAt; now += tick) {
     const a = state.athletes[id];
     if (!a.done && !silent && a.beat < TOTAL_BEATS) {
       const target = beatTime(state.startsAt, a.beat) + offset;
       if (now <= target && target < now + tick) {
-        strokes += 1;
-        const correct = sideOf(state.sides, a.beat);
-        const wrong = wrongEvery && strokes % wrongEvery === 0;
-        swim.applyInput(state, id, { s: wrong ? 1 - correct : correct }, target);
+        seen += 1;
+        if (seen % everyNth === 0) {
+          strokes += 1;
+          const correct = sideOf(state.sides, a.beat);
+          const wrong = wrongEvery && strokes % wrongEvery === 0;
+          swim.applyInput(state, id, { s: wrong ? 1 - correct : correct }, target);
+        }
       }
     }
     swim.step(state, tick / 1000, now);
@@ -76,14 +82,23 @@ test('reaction tiers run fast to slow, then the cue expires', () => {
   assert.equal(judge(state.startsAt, 0, at), 'perfect');
   assert.equal(judge(state.startsAt, 0, at + TIER.perfect + 5), 'good');
   assert.equal(judge(state.startsAt, 0, at + TIER.good + 5), 'ok');
-  assert.equal(judge(state.startsAt, 0, at + REACT_MS + 5), null);
+  assert.equal(judge(state.startsAt, 0, at + HIT_WINDOW_MS + 5), null);
 });
 
-test('a press BEFORE the cue lands scores nothing — it cannot be a reaction', () => {
+test('the hit window is symmetric — a cue can be struck on the way in', () => {
   const state = fresh();
   const at = beatTime(state.startsAt, 0);
-  assert.equal(judge(state.startsAt, 0, at - 1), null);
-  assert.equal(judge(state.startsAt, 0, at - 200), null);
+  assert.equal(judge(state.startsAt, 0, at - 1), 'perfect');
+  assert.equal(judge(state.startsAt, 0, at - (TIER.good - 5)), 'good');
+  assert.equal(judge(state.startsAt, 0, at - (HIT_WINDOW_MS + 5)), null);
+});
+
+test('landing MORE strokes beats landing fewer', () => {
+  // The event is decided by volume: same window, same wind, one swimmer simply
+  // keeps up with the stream and the other answers every third cue.
+  const busy = race(fresh(), 'ace');
+  const sparse = race(fresh(), 'ace', { everyNth: 3 });
+  assert.ok(busy.x > sparse.x, `busy ${busy.x}m vs sparse ${sparse.x}m`);
 });
 
 test('the stroke pattern is mixed, not taking turns', () => {
@@ -107,12 +122,12 @@ test('the stroke pattern is mixed, not taking turns', () => {
 
 test('answering faster moves you faster', () => {
   const quick = race(fresh(), 'ace', { offset: 40 });
-  const dawdling = race(fresh(), 'ace', { offset: REACT_MS - 40 });
+  const dawdling = race(fresh(), 'ace', { offset: HIT_WINDOW_MS - 20 });
   assert.ok(quick.time < dawdling.time, `quick ${quick.time} vs slow ${dawdling.time}`);
 });
 
 test('even the slowest correct answer still finishes inside the round', () => {
-  const slow = race(fresh(), 'ace', { offset: REACT_MS - 20 });
+  const slow = race(fresh(), 'ace', { offset: HIT_WINDOW_MS - 10 });
   assert.equal(slow.done, true, `only reached ${slow.x}m`);
 });
 

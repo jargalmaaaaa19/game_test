@@ -71,7 +71,7 @@ const mn = {
   speed: 'Хурд',
   swimL: 'ЗҮҮН',
   swimR: 'БАРУУН',
-  swimHint: 'Тэмдэг гарангуут тохирох талыг аль болох хурдан дар',
+  swimHint: 'Сум хүрээн дээр ирэхэд тохирох талыг дар — олон дарсан нь хожино',
   swimDistance: (x, total) => `${x} / ${total}м`,
   swimCombo: (n) => `${n} дараалан`,
   swimJudge: {
@@ -205,7 +205,7 @@ const en = {
   speed: 'Speed',
   swimL: 'LEFT',
   swimR: 'RIGHT',
-  swimHint: 'The moment a cue shows, hit that side as fast as you can',
+  swimHint: 'Hit each arrow as it crosses the box — the most strokes wins',
   swimDistance: (x, total) => `${x} / ${total}m`,
   swimCombo: (n) => `${n} in a row`,
   swimJudge: {

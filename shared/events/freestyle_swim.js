@@ -5,33 +5,49 @@
 // toward the hit line, so the beat the player sees is the beat the server
 // judges.
 //
-// Cues arrive on a fixed beat, each calling for a LEFT or RIGHT stroke, and the
+// Cues flow across a hit zone, each calling for a LEFT or RIGHT stroke, and the
 // side is drawn fresh from the match seed every cue — no turn-taking, so it
-// cannot be drummed out from memory. The clock on a cue starts the instant it
-// lands: answer it correctly and the FASTER you were, the harder you pull.
-// Answer it on the wrong side, or let the window run out, and you stall.
+// cannot be drummed out from memory. Strike one while it is over the zone and
+// you pull; catch the wrong side, or let it flow past unstruck, and you stall.
 //
-// The whole pattern goes out on the wire and the lane SHOWS it coming, so a
+// VOLUME is what decides the heat. Every landed stroke is worth about the same
+// (a crisp one a little more), so the swimmer who lands the most of them wins —
+// the race is how many of a dense stream of cues you can keep up with, not how
+// exactly you time any single one of them.
+//
+// The whole pattern goes out on the wire and the lane shows it coming, so a
 // player can read the next few strokes and have the right thumb ready. What
-// that buys is preparation, not a head start: the window opens when the cue
-// reaches the line and not a millisecond earlier, and a press before then is a
-// splash that costs speed and consumes nothing (see `applyInput`). That
-// penalty is what keeps a known pattern from collapsing into hammering both
-// buttons on the beat — you still have to wait for the cue and then be quick.
+// that buys is preparation, not free speed: a press with no cue over the zone
+// is a splash that costs speed and consumes nothing (see `applyInput`), which
+// is what stops a known pattern collapsing into hammering both buttons.
 
 export const DISTANCE_M = 50;
 export const COUNTDOWN_MS = 2_500;
 export const LEAD_IN_MS = 1_500; // gun to first cue, so nobody starts mid-beat
-export const BEAT_MS = 620; // must exceed REACT_MS, or two cues are live at once
-export const TOTAL_BEATS = 90; // more than a fast swim needs
-export const MAX_RACE_MS = 42_000;
+// Cues come thick and fast: closer together on the lane and quicker across it
+// than a stroke rhythm needs, because the event is now decided by how many you
+// land rather than by how precisely you land any one of them.
+export const BEAT_MS = 380;
+export const TOTAL_BEATS = 130; // enough to still be arriving for a slow swim
+// Sits inside the phase backstop (durationMs 45s + 5s overtime), and is set so
+// that a swimmer landing every OTHER cue still touches the wall — last, and
+// twenty seconds down, but in the water rather than stranded mid-pool when the
+// clock kills the heat.
+export const MAX_RACE_MS = 46_000;
 
-/** How long a cue stays answerable after it lands. Past this it is a miss. */
-export const REACT_MS = 460;
+/**
+ * How far either side of the beat a cue can be struck.
+ *
+ * SYMMETRIC, where this used to only open once the cue had landed. The cue now
+ * flows across the hit zone rather than stopping on it, so the honest question
+ * is "was the arrow over the block when you pressed", and that has an early
+ * side as well as a late one.
+ */
+export const HIT_WINDOW_MS = 170;
 
-// Reaction tiers, for the flash the client shows. They name the same thing the
-// impulse curve pays for — they do not decide it.
-export const TIER = { perfect: 130, good: 260 };
+// Tiers, for the flash the client shows. They name how close to the middle of
+// the zone the press was; they are not what the impulse is paid on.
+export const TIER = { perfect: 60, good: 115 };
 
 // Impulse runs smoothly from SLOW (answered as the window closes) to FAST
 // (answered instantly), so there is something to gain from every millisecond
@@ -41,12 +57,18 @@ export const TIER = { perfect: 130, good: 260 };
 // ~1.4 m/s. The floor matters: a swimmer who answers every cue late but
 // correctly must still cover the 50m inside MAX_RACE_MS. Being slow is a worse
 // race, not a race that never ends.
-const IMPULSE_FAST = 0.95;
+const IMPULSE_FAST = 0.68;
 const IMPULSE_SLOW = 0.55;
 
-// Water resistance. A missed beat costs more than a mistimed one, and a stroke
-// on the wrong side costs most of all — you have caught the water backwards.
-const PENALTY = { miss: 0.82, wrong: 0.75, splash: 0.9 };
+// Water resistance. A stroke on the wrong side costs most — you have caught
+// the water backwards.
+//
+// `miss` is per CUE, and the cues now come 63% more often than they did, so
+// the old 0.82 was quietly charging half as much again over a race: a swimmer
+// answering every other cue was dragged down to under a metre a second and
+// could not finish at all. Falling behind should cost you the race, not strand
+// you in the water.
+const PENALTY = { miss: 0.93, wrong: 0.75, splash: 0.9 };
 
 const DRAG = 0.65;
 const MAX_SPEED = 2.8; // m/s — a shade over world-record pace
@@ -69,13 +91,13 @@ export const reactionTo = (startsAt, i, now) => now - beatTime(startsAt, i);
 /**
  * The tier a press at `now` earns against cue `i`; null if it does not count.
  *
- * ASYMMETRIC, unlike a rhythm window: a press BEFORE the cue lands scores
- * nothing at all, because it cannot have been a reaction to something that had
- * not happened yet. Anticipation is exactly what this event is not about.
+ * Graded on the DISTANCE from the beat, either side of it: the cue rides
+ * across the hit zone rather than parking on it, so it is over the block for a
+ * moment before the beat as well as after.
  */
 export function judge(startsAt, i, now) {
-  const r = reactionTo(startsAt, i, now);
-  if (r < 0 || r > REACT_MS) return null;
+  const r = Math.abs(reactionTo(startsAt, i, now));
+  if (r > HIT_WINDOW_MS) return null;
   if (r <= TIER.perfect) return 'perfect';
   if (r <= TIER.good) return 'good';
   return 'ok';
@@ -91,7 +113,7 @@ export function judge(startsAt, i, now) {
  * where the press happens to fall between ticks.
  */
 function expireStaleBeats(state, a, now) {
-  while (a.beat < TOTAL_BEATS && beatTime(state.startsAt, a.beat) + REACT_MS < now) {
+  while (a.beat < TOTAL_BEATS && beatTime(state.startsAt, a.beat) + HIT_WINDOW_MS < now) {
     a.v *= PENALTY.miss;
     a.hits.miss += 1;
     a.combo = 0;
@@ -184,8 +206,8 @@ export default {
       // THE point of the event: a smooth ramp on reaction time, so the swimmer
       // who answers first pulls hardest. Everyone who answers correctly moves;
       // how much is a race between thumbs.
-      const r = reactionTo(state.startsAt, a.beat, now);
-      const promptness = 1 - Math.min(Math.max(r, 0), REACT_MS) / REACT_MS;
+      const r = Math.abs(reactionTo(state.startsAt, a.beat, now));
+      const promptness = 1 - Math.min(r, HIT_WINDOW_MS) / HIT_WINDOW_MS;
       a.v = Math.min(a.v + IMPULSE_SLOW + (IMPULSE_FAST - IMPULSE_SLOW) * promptness, MAX_SPEED);
       a.hits[grade] += 1;
       a.combo += 1;
@@ -268,8 +290,8 @@ export default {
     // difficulty is higher. It must never answer at r=0: that is faster than a
     // human nervous system and would win every heat.
     const r = reactionTo(state.startsAt, a.beat, now);
-    const reflex = 110 + (1 - difficulty) * 320;
-    if (r < reflex || r > REACT_MS) return null;
+    const reflex = (1 - difficulty) * HIT_WINDOW_MS;
+    if (r < reflex || r > HIT_WINDOW_MS) return null;
     return { s: sideOf(state.sides, a.beat) };
   },
 };
