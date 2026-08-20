@@ -44,15 +44,24 @@ export const HAIRSTYLES = [
 ];
 
 /** `kind` drives real geometry — a dress flares, a hoodie has a hood. */
+/**
+ * Two tones each, and no more. The kit is moulded plastic: a bright body colour
+ * and one accent, which is what a toy is actually painted like.
+ *
+ * The palette is deliberately BRIGHTER than a wardrobe would be. These are lit
+ * by one key against a dark card at 40px, and a realistic navy and a muted rose
+ * both arrive as the same dark smudge. Saturation is legibility here, not
+ * taste - nothing is allowed to go so dark it stops reading as a colour.
+ */
 export const OUTFITS = [
-  { id: 'o_dress', label: 'Dress', kind: 'dress', primary: '#e8628c', secondary: '#fdf2f6' },
-  { id: 'o_skirt', label: 'Top & skirt', kind: 'skirt', primary: '#fda4af', secondary: '#1e293b' },
-  { id: 'o_jeans', label: 'Tee & jeans', kind: 'jeans', primary: '#f4f4f5', secondary: '#3b5c8f' },
-  { id: 'o_hoodie', label: 'Hoodie', kind: 'hoodie', primary: '#6d28d9', secondary: '#c4b5fd' },
-  { id: 'o_blazer', label: 'Blazer', kind: 'blazer', primary: '#232a36', secondary: '#f8fafc' },
-  { id: 'o_track', label: 'Tracksuit', kind: 'track', primary: '#e5484d', secondary: '#ffffff' },
-  { id: 'o_overalls', label: 'Overalls', kind: 'overalls', primary: '#4a6fa5', secondary: '#fbbf24' },
-  { id: 'o_crop', label: 'Crop & shorts', kind: 'crop', primary: '#22d3ee', secondary: '#0f172a' },
+  { id: 'o_dress', label: 'Dress', kind: 'dress', primary: '#ff5c9d', secondary: '#fff2f7' },
+  { id: 'o_skirt', label: 'Top & skirt', kind: 'skirt', primary: '#ffa8bd', secondary: '#33477a' },
+  { id: 'o_jeans', label: 'Tee & jeans', kind: 'jeans', primary: '#fbfbfc', secondary: '#3f80ee' },
+  { id: 'o_hoodie', label: 'Hoodie', kind: 'hoodie', primary: '#8b45ff', secondary: '#d6c4ff' },
+  { id: 'o_blazer', label: 'Blazer', kind: 'blazer', primary: '#37455f', secondary: '#fbfdff' },
+  { id: 'o_track', label: 'Tracksuit', kind: 'track', primary: '#ff4f52', secondary: '#ffffff' },
+  { id: 'o_overalls', label: 'Overalls', kind: 'overalls', primary: '#4f8ff0', secondary: '#ffd23f' },
+  { id: 'o_crop', label: 'Crop & shorts', kind: 'crop', primary: '#2ad9f2', secondary: '#2b3d63' },
 ];
 
 /**

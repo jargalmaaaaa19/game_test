@@ -67,7 +67,30 @@ function ensureEngine() {
   return engine;
 }
 
-const whenReady = (sc) => new Promise((resolve) => sc.executeWhenReady(resolve));
+/**
+ * Wait for the scene to actually be renderable.
+ *
+ * NOT `executeWhenReady`: with no render loop running — and there is none here,
+ * portraits are rendered by hand — Babylon falls back to polling readiness on a
+ * timer, and every portrait paid roughly a second of waiting for a scene that
+ * was ready almost immediately. Polling it ourselves on the frame clock turns
+ * that into a frame or two. The work was never the cost; the wait was.
+ */
+const whenReady = (sc) =>
+  new Promise((resolve) => {
+    let tries = 0;
+    const tick = () => {
+      // A ceiling, so a scene that never reports ready cannot hang the gallery
+      // for good — it renders whatever it has instead.
+      if (sc.isReady() || (tries += 1) > 400) resolve();
+      // A TIMER, not requestAnimationFrame. rAF does not fire in a hidden or
+      // backgrounded tab, so a player who switches apps mid-lobby comes back to
+      // a gallery that never finished rendering. A timer is throttled there
+      // rather than stopped, which is slow instead of broken.
+      else setTimeout(tick, 4);
+    };
+    tick();
+  });
 
 /**
  * @returns {Promise<string|null>} a PNG data URL for this look, or null if
