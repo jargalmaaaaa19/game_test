@@ -194,6 +194,16 @@ function faceTexture(B, scene, skinHex, hairHex, broad) {
 
   tex.update(false);
   cache.set(key, tex);
+  // EVICT ON DISPOSE, or this cache becomes a bug rather than an optimisation.
+  // Characters are torn down with `root.dispose(false, true)` — the `true` is
+  // "dispose my textures too" — so the first character to be disposed takes the
+  // shared face with it, and every character built afterwards gets a live
+  // material pointing at a dead texture and renders with no face at all. It
+  // shows up the moment a player picks a second character: the preview rebuilds
+  // and the face is gone.
+  tex.onDisposeObservable.addOnce(() => {
+    if (cache.get(key) === tex) cache.delete(key);
+  });
   return tex;
 }
 
@@ -223,8 +233,8 @@ function ensureEnvironment(B, scene) {
  * `roughness` is the only dial worth thinking about here: skin is soft, cloth
  * is softer, hair has a sheen, and an eye is wet.
  */
-function surface(B, scene, hex, { roughness = 0.8, alpha = 1, emissive = 0, sheen = 0 } = {}) {
-  const mat = new B.PBRMaterial(`m_${hex}_${roughness}_${alpha}_${emissive}_${sheen}`, scene);
+function surface(B, scene, hex, { roughness = 0.8, alpha = 1, emissive = 0, sheen = 0, clearcoat = 0 } = {}) {
+  const mat = new B.PBRMaterial(`m_${hex}_${roughness}_${alpha}_${emissive}_${sheen}_${clearcoat}`, scene);
   // sRGB in, LINEAR out. The catalog hexes are sRGB — the colours a designer
   // picked — and a PBR albedo is linear. Handing the hex straight over washes
   // every character out: honey skin renders as chalk and brown hair as grey,
@@ -245,6 +255,14 @@ function surface(B, scene, hex, { roughness = 0.8, alpha = 1, emissive = 0, shee
     mat.sheen.isEnabled = true;
     mat.sheen.intensity = sheen;
     mat.sheen.roughness = 0.5;
+  }
+  // A clear lacquer over the colour — the moulded-toy finish. Sheen would be
+  // the wrong model here: sheen scatters at grazing angles the way felt does,
+  // and plastic has a tight, bright highlight instead.
+  if (clearcoat) {
+    mat.clearCoat.isEnabled = true;
+    mat.clearCoat.intensity = clearcoat;
+    mat.clearCoat.roughness = 0.12;
   }
   return mat;
 }
@@ -284,22 +302,22 @@ export function buildChibi(B, scene, look) {
   const mats = {
     // Skin is soft but not chalk: a little sheen is what stops a cheek reading
     // as felt.
-    skin: surface(B, scene, skinTone.hex, { roughness: 0.6, sheen: 0.05 }),
+    skin: surface(B, scene, skinTone.hex, { roughness: 0.52 }),
     head: (() => {
-      const m = surface(B, scene, '#ffffff', { roughness: 0.6, sheen: 0.05 });
+      const m = surface(B, scene, '#ffffff', { roughness: 0.52 });
       m.albedoTexture = faceTexture(B, scene, skinTone.hex, hairStyle.color, broadBuild);
       return m;
     })(),
-    hair: surface(B, scene, hairStyle.color, { roughness: 0.52, sheen: 0.14 }),
-    primary: surface(B, scene, outfitStyle.primary, { roughness: 0.82, sheen: 0.06 }),
-    secondary: surface(B, scene, outfitStyle.secondary, { roughness: 0.82, sheen: 0.06 }),
-    primaryDark: surface(B, scene, shade(B, outfitStyle.primary, 0.7), { roughness: 0.86 }),
+    hair: surface(B, scene, hairStyle.color, { roughness: 0.3, clearcoat: 0.35 }),
+    primary: surface(B, scene, outfitStyle.primary, { roughness: 0.3, clearcoat: 0.45 }),
+    secondary: surface(B, scene, outfitStyle.secondary, { roughness: 0.3, clearcoat: 0.45 }),
+    primaryDark: surface(B, scene, shade(B, outfitStyle.primary, 0.7), { roughness: 0.34, clearcoat: 0.4 }),
     // The eyes carry the whole face. Wet, not black: a near-black brown at
     // roughness 0.05 catches the key and the rim as two separate highlights,
     // which is the difference between an eye and a hole.
     ink: surface(B, scene, '#20191c', { roughness: 0.05 }),
     white: surface(B, scene, '#ffffff', { roughness: 0.12, emissive: 0.3 }),
-    shoe: surface(B, scene, '#e4e8ee', { roughness: 0.45 }),
+    shoe: surface(B, scene, '#e4e8ee', { roughness: 0.26, clearcoat: 0.5 }),
     blush: surface(B, scene, '#f2758a', { alpha: 0.3, roughness: 0.8 }),
     mouth: surface(B, scene, '#8c3038', { roughness: 0.42 }),
   };
