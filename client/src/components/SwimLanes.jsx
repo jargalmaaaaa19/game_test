@@ -1,4 +1,5 @@
 import { DISTANCE_M } from '@shared/events/freestyle_swim.js';
+import { t } from '../i18n.js';
 import Flag from './Flag.jsx';
 
 /**
@@ -66,7 +67,7 @@ function Scoreboard({ players, snap, meId }) {
           <Flag code={player.country} className="h-3 w-4.5" />
           <span className="min-w-0 flex-1 truncate">{player.name}</span>
           <span className="font-mono text-xs tabular-nums text-neutral-400">
-            {a?.d ? `${(a.t / 1000).toFixed(2)}s` : `${(a?.x ?? 0).toFixed(1)}м`}
+            {a?.d ? t.secs((a.t / 1000).toFixed(2)) : `${(a?.x ?? 0).toFixed(1)}м`}
           </span>
         </li>
       ))}

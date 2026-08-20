@@ -92,6 +92,7 @@ const mn = {
   // so it gets the short form — never `place`.
   placeShort: (n) => `${n}-р`,
   mps: 'м/с',
+  secs: (v) => `${v}с`,
   lane: (n) => `${n}-р зам`,
   finalStandings: 'Эцсийн байр',
   champion: 'Аварга',
@@ -229,6 +230,7 @@ const en = {
   place: (n) => `#${n}`,
   placeShort: (n) => ['1st', '2nd', '3rd'][n - 1] ?? `${n}th`,
   mps: 'm/s',
+  secs: (v) => `${v}s`,
   lane: (n) => `lane ${n}`,
   finalStandings: 'Final standings',
   champion: 'Champion',

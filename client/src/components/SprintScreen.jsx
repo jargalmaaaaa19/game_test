@@ -337,7 +337,7 @@ export default function SprintScreen({ room, me, netRef, sendInput, event }) {
           hudRef.current.textContent = String(Math.ceil(toGun / 1000));
           hudRef.current.dataset.state = 'countdown';
         } else if (mine?.done) {
-          hudRef.current.textContent = `${(mine.time / 1000).toFixed(2)}s`;
+          hudRef.current.textContent = t.secs((mine.time / 1000).toFixed(2));
           hudRef.current.dataset.state = 'done';
         } else if (mine?.falseStart && toGun > -1200) {
           hudRef.current.textContent = t.falseStart;
