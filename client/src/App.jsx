@@ -4,7 +4,7 @@ import { DEFAULT_CHARACTER, DEFAULT_SKIN } from '@shared/avatars.js';
 import { DEFAULT_COUNTRY } from '@shared/countries.js';
 import { t, errorText } from './i18n.js';
 import { SERVER_URL, useRoomSocket } from './net/useRoomSocket.js';
-import { invitedRoomId, onInvitedToRoom } from './net/usion.js';
+import { invitedRoomId, launchedSolo, onInvitedToRoom } from './net/usion.js';
 import HomePage from './components/HomePage.jsx';
 import LobbyPage from './components/LobbyPage.jsx';
 import SprintScreen from './components/SprintScreen.jsx';
@@ -56,7 +56,7 @@ function loadLook(hostConfig) {
 export default function App({ hostConfig }) {
   const {
     connection, room, me, error, match, netRef,
-    createRoom, joinRoom, leaveRoom, updateIdentity, setReady, startGame, sendInput, clearError,
+    createRoom, joinRoom, soloMatch, leaveRoom, updateIdentity, setReady, startGame, sendInput, clearError,
     requestRematch,
   } = useRoomSocket();
 
@@ -109,7 +109,7 @@ export default function App({ hostConfig }) {
   }, []);
 
   const handleCreate = () => guard(() => createRoom({ name: look.name || undefined }));
-  const handleJoin = (code) => guard(() => joinRoom({ code, name: look.name || undefined }));
+  const handleSolo = () => guard(() => soloMatch({ name: look.name || undefined }));
 
   // --- arriving from an invite ---------------------------------------------
   // The invited player never sees a code. The platform hands us the room, and
@@ -147,6 +147,21 @@ export default function App({ hostConfig }) {
     if (launched) acceptInvite(launched);
     return onInvitedToRoom(acceptInvite);
   }, [connection, room, acceptInvite]);
+
+  // The solo door. A launch that is not an invite starts a round against bots
+  // the moment the socket is up — no menu, no Play button, nothing to tap. The
+  // invite door above runs first and claims the session when there is a room to
+  // join, so the two can never both fire.
+  const soloRef = useRef(false);
+  useEffect(() => {
+    if (connection !== 'connected' || room || soloRef.current) return;
+    if (invitedRoomId() || !launchedSolo(hostConfig)) return;
+    soloRef.current = true;
+    guard(() => soloMatch({ name: look.name || undefined }));
+    // `look.name` is read at call time, as with the invite: adding it here
+    // would re-arm the effect on every keystroke in the name field.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connection, room, guard, soloMatch, hostConfig]);
 
   if (connection !== 'connected' && !room) {
     return (
@@ -191,7 +206,7 @@ export default function App({ hostConfig }) {
         look={look}
         onLookChange={setLook}
         onCreate={handleCreate}
-        onJoin={handleJoin}
+        onSolo={handleSolo}
         error={error}
         busy={busy}
       />

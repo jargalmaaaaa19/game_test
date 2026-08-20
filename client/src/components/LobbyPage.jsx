@@ -17,7 +17,6 @@ export default function LobbyPage({
   busy,
 }) {
   const [editing, setEditing] = useState(false);
-  const [copied, setCopied] = useState(false);
 
   const connected = room.players.filter((p) => p.connected);
   const everyoneReady = connected.length > 0 && connected.every((p) => p.ready);
@@ -30,16 +29,6 @@ export default function LobbyPage({
 
   const [inviting, setInviting] = useState(false);
 
-  const copyCode = async () => {
-    try {
-      await navigator.clipboard.writeText(room.code);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    } catch {
-      /* clipboard is blocked in some WebViews — the code is on screen anyway */
-    }
-  };
-
   /**
    * Invite, the primary way anyone joins.
    *
@@ -49,14 +38,14 @@ export default function LobbyPage({
    * `room:join` takes when the invitee arrives.
    *
    * Outside the Usion app the SDK resolves `{success:false}` rather than
-   * throwing, and there is no picker to fall back on — so that path copies the
-   * code instead of pretending an invite was sent.
+   * throwing. There is no picker out there and no code to fall back on any
+   * more, so the hint under the button is what tells a web player that this
+   * door only opens inside the app.
    */
   const invite = async () => {
     setInviting(true);
     try {
-      const { success } = await inviteToRoom(room.code, room.maxPlayers);
-      if (!success) await copyCode();
+      await inviteToRoom(room.code, room.maxPlayers);
     } finally {
       setInviting(false);
     }
@@ -68,12 +57,10 @@ export default function LobbyPage({
 
   return (
     <div className="mx-auto flex min-h-full w-full max-w-md flex-col gap-6 px-5 py-8">
-      {/* Invite first, code second. Reading a code out loud is what you do
-          when the platform cannot introduce two players to each other; inside
-          Usion it can, so the code stops being the way in and becomes the
-          fallback it always should have been. It stays VISIBLE rather than
-          hidden behind a menu: a player on the web build, or one whose invite
-          never arrived, still needs it. */}
+      {/* Invite, and nothing else. The platform owns the picker, the roster
+          and the delivery; a waiting hall that drew its own code, share sheet
+          or friend list would be competing with the app it lives inside — and
+          the code is gone entirely now, not demoted. */}
       <header className="text-center">
         <button
           type="button"
@@ -86,14 +73,6 @@ export default function LobbyPage({
         <p className="mt-3 text-xs text-neutral-500">
           {isEmbedded() ? t.inviteHint : t.inviteHintWeb}
         </p>
-        <button
-          type="button"
-          onClick={copyCode}
-          className="mt-2 font-mono text-2xl font-bold tracking-[0.25em] text-neutral-400 transition active:scale-95"
-        >
-          {room.code}
-        </button>
-        <p className="mt-1 text-[11px] text-neutral-600">{copied ? t.copied : t.tapToCopy}</p>
       </header>
 
       <section>

@@ -159,6 +159,12 @@ export function useRoomSocket() {
       createRoom: (payload) => enterRoom('room:create', payload),
       joinRoom: (payload) => enterRoom('room:join', payload),
 
+      // The solo door: room, bots and the first event in one call, so the feed
+      // opens straight into a race. Same `enterRoom` plumbing as the others —
+      // it seats the player and stores the seat — the server just does the
+      // lobby's whole job before answering.
+      soloMatch: (payload) => enterRoom('room:solo', payload),
+
       leaveRoom: async () => {
         await call('room:leave');
         localStorage.removeItem(SEAT_KEY);

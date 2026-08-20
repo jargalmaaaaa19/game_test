@@ -77,6 +77,47 @@ export async function reportMatchResult({ winnerId, standings, scores }) {
 }
 
 /**
+ * How this session was opened: `'single'`, `'multiplayer'`, or null outside the
+ * Usion app.
+ *
+ * DECIDE FROM THIS, NEVER FROM `roomId`. A solo launch is still handed a room
+ * for the SDK's own plumbing, so a game that inferred "multiplayer" from the
+ * presence of a room id parked solo players on a waiting screen for a friend
+ * who was never coming.
+ */
+export function launchMode() {
+  try {
+    const params = sdk()?.getLaunchParams?.();
+    const mode = params?.mode;
+    return mode === 'single' || mode === 'multiplayer' ? mode : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Should this session start playing immediately, on its own?
+ *
+ * True for the GameTok/Explore feed, where the game opens straight into a round
+ * against bots — a game that opens on a lobby is dead content in a swipe feed.
+ * False only for a chat invite, which is the one door that leads to the hall.
+ *
+ * Outside the Usion app there is no launch mode and no invite picker, so the
+ * standalone web build takes the solo door too.
+ */
+export function launchedSolo(hostConfig) {
+  const mode = launchMode();
+  if (mode) return mode === 'single';
+  try {
+    const game = sdk()?.game;
+    if (typeof game?.isMultiplayer === 'function') return !game.isMultiplayer();
+  } catch { /* fall through to the room id */ }
+  // Older SDKs: the only tell left is the shape of the room id.
+  const roomId = hostConfig?.roomId ? String(hostConfig.roomId) : '';
+  return !roomId || /^standalone[_-]/i.test(roomId);
+}
+
+/**
  * The room a player was invited into, if the game was opened from an invite.
  *
  * `getLaunchParams()` is the SDK's own answer to "how did this session start",

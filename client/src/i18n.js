@@ -18,7 +18,6 @@ const mn = {
   join: 'Нэгдэх',
   cancel: 'Болих',
   copied: 'Хуулагдлаа',
-  tapToCopy: 'Дарж хуулна уу',
 
   myAthlete: 'Миний тамирчин',
   edit: 'Өөрчлөх',
@@ -147,7 +146,6 @@ const en = {
   join: 'Join',
   cancel: 'Cancel',
   copied: 'Copied',
-  tapToCopy: 'Tap to copy',
 
   myAthlete: 'My athlete',
   edit: 'Edit',
