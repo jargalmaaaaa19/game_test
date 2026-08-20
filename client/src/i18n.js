@@ -70,7 +70,7 @@ const mn = {
   swimCombo: (n) => `${n} дараалан`,
   swimJudge: {
     perfect: 'ТӨГС!', good: 'САЙН', ok: 'БОЛЖ БАЙНА',
-    miss: 'АЛДЛАА', wrong: 'БУРУУ ТАЛ', splash: 'ЭРТ',
+    wrong: 'БУРУУ ТАЛ',
   },
   eventOf: (i, total) => `${i}/${total} төрөл`,
   results: 'Дүн',
@@ -199,7 +199,7 @@ const en = {
   swimCombo: (n) => `${n} in a row`,
   swimJudge: {
     perfect: 'PERFECT!', good: 'GOOD', ok: 'OK',
-    miss: 'MISS', wrong: 'WRONG SIDE', splash: 'EARLY',
+    wrong: 'WRONG SIDE',
   },
   eventOf: (i, total) => `event ${i}/${total}`,
   results: 'Results',

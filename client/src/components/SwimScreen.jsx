@@ -1,10 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  BEAT_MS,
   DISTANCE_M,
-  TOTAL_BEATS,
-  HIT_WINDOW_MS,
-  beatTime,
   sideOf,
 } from '@shared/events/freestyle_swim.js';
 import { babylon } from '../avatar3d/portraits.js';
@@ -14,23 +10,16 @@ import { t, lang } from '../i18n.js';
 import Flag from './Flag.jsx';
 import SwimLanes from './SwimLanes.jsx';
 
-// How long a cue takes to cross the lane. Set in MILLISECONDS rather than as a
-// multiple of the beat, because the two things it controls pull apart: this is
-// the scroll SPEED, while speed x BEAT_MS is the GAP between cues. Tying it to
-// the beat meant the arrows could not be brought closer together without also
-// slowing them down.
-const LOOKAHEAD_MS = 1_400;
+// How many cues of the queue are on screen, and how far apart they sit as a
+// percentage of the lane. Six is enough to read the next few strokes without
+// shrinking them to specks.
+const CUES_SHOWN = 6;
+const CUE_GAP = 15;
 
-// Enough to cover the lookahead plus the ones still flowing out past the zone.
-const CUES_DRAWN = Math.ceil(LOOKAHEAD_MS / BEAT_MS) + 3;
-
-// How long a struck or spent cue keeps travelling before it is recycled. Cues
-// flow THROUGH the hit zone and off the end; they used to stop dead on it and
-// pile up, which read as the lane jamming.
-const FLOW_PAST_MS = 420;
-
-// Where the hit line sits across the cue lane, as a percentage of its width.
-// Cues enter at 100% and are struck here.
+// Where the hit block sits across the lane, as a percentage of its width. The
+// cue at the front of the queue WAITS on it — the lane advances a slot when a
+// stroke lands, and not otherwise, which is what puts the pace in the player's
+// hands rather than a clock's.
 const HIT_AT = 18;
 
 // The cue tiles carry an arrow, not a word: "БАРУУН" does not fit in a tile a
@@ -45,23 +34,24 @@ const RANK_INTERVAL_MS = 150;
 const MEDAL_TONE = ['#ffd23f', '#dbe4ee', '#e8834a'];
 
 /**
- * 50m Freestyle.
+ * 50m Backstroke.
  *
- * Cues slide toward a hit line on the beat; press the matching side as one
- * arrives. Both the cue positions and the judgement come from the same pure
- * module the server runs, off `startsAt` — a SERVER timestamp — so the beat
- * drawn here is the beat scored there.
+ * A queue of cues waits at the hit block; press the matching side whenever you
+ * have read the one at the front, and the line comes forward a slot. Nothing
+ * arrives on a clock and nothing gets away, so the lane runs at the swimmer's
+ * pace — which is the whole point of it being a queue rather than a stream.
  *
- * Cue motion and the pool are animation and live on rAF. Distance, combo,
- * times and the standings live on an interval, because a hidden tab stops rAF
- * dead and a frozen scoreboard reads as a crash. (Archery taught this one.)
+ * That also decides who draws what. The QUEUE is React's: it moves a few times
+ * a second, so it is rendered from `mine.b` and slid by a CSS transition. The
+ * POOL is the arena's, on rAF, because swimmers move every frame. Distance,
+ * combo, times and the standings sit on an interval, because a hidden tab stops
+ * rAF dead and a frozen scoreboard reads as a crash. (Archery taught that one.)
  */
 export default function SwimScreen({ room, me, netRef, sendInput, event }) {
   const rootRef = useRef(null);
   const canvasRef = useRef(null);
   const arenaRef = useRef(null);
   const laneRefs = useRef(new Map()); // flat fallback only
-  const cueRefs = useRef([]);
   const judgeRef = useRef(null);
   const clockRef = useRef(null);
   const placeRef = useRef(null);
@@ -164,7 +154,7 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
       const now = serverNow(net);
 
       const sig = Object.values(latest.a ?? {})
-        .map((p) => `${p.d}:${p.t}:${p.c}:${Math.round(p.x)}`)
+        .map((p) => `${p.d}:${p.t}:${p.b}:${p.c}:${Math.round(p.x)}`)
         .join('|');
       if (sig !== sigRef.current) {
         sigRef.current = sig;
@@ -178,8 +168,8 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
           toGun > 0
             ? String(Math.ceil(toGun / 1000))
             : a?.d
-              ? `${(a.t / 1000).toFixed(2)}s`
-              : `${((now - latest.s) / 1000).toFixed(1)}s`;
+              ? t.secs((a.t / 1000).toFixed(2))
+              : t.secs(((now - latest.s) / 1000).toFixed(1));
       }
     };
 
@@ -282,55 +272,12 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
 
       if (!a) return;
 
-      // The server's beat pointer is up to one tick + one latency stale, so a
-      // cue it has already expired can still be sitting on the hit line here —
-      // and the player presses for a beat that is gone. Take whichever is
-      // further along: the pointer, or the first cue the clock says is alive.
-      const firstAlive = Math.max(
-        0,
-        Math.ceil((sNow - beatTime(latest.s, 0) - HIT_WINDOW_MS) / BEAT_MS),
-      );
-      const base = Math.max(a.b, firstAlive);
+      // The queue itself is not drawn here: it moves a slot per stroke, a few
+      // times a second, so it is React's to render and CSS's to slide. Sixty
+      // frames a second of a row that changes four times a second would be
+      // sixty frames a second of nothing.
 
-      // Cues slide right-to-left onto the hit line.
-      //
-      // Positioned by `left`, as a percentage OF THE LANE. It used to be a
-      // percentage translateX — which is a percentage of the CUE, forty pixels
-      // — so every cue in the lookahead landed within forty pixels of the hit
-      // line, printed on top of one another. Writing `transform` also wiped
-      // the centring the class had set, dropping each cue half its own height
-      // out of the lane and into the row underneath it.
-      for (let k = 0; k < CUES_DRAWN; k += 1) {
-        const node = cueRefs.current[k];
-        if (!node) continue;
-        const index = base + k;
-        if (index >= TOTAL_BEATS) {
-          node.style.opacity = '0';
-          continue;
-        }
-        const until = beatTime(latest.s, index) - sNow;
-        if (until > LOOKAHEAD_MS || until < -FLOW_PAST_MS) {
-          node.style.opacity = '0';
-          continue;
-        }
-
-        // NOT clamped at the hit zone. Letting `until` go negative is what
-        // carries a cue on through the zone and out of the lane; clamping it
-        // parked every spent cue on the line in a heap.
-        //
-        // And one steady colour per side, all the way across — no muted-to-lit
-        // switch as it arrives. The switch was a colour change on a 75ms
-        // transition happening every 380ms, which is a strobe, and with the
-        // cues this close together several of them were doing it at once.
-        const side = sideOf(latest.sides, index);
-        node.style.opacity = '1';
-        node.style.left =
-          `${(HIT_AT + (until / LOOKAHEAD_MS) * (100 - HIT_AT)).toFixed(2)}%`;
-        node.dataset.cue = side === 0 ? 'left' : 'right';
-        node.textContent = side === 0 ? ARROW.left : ARROW.right;
-      }
-
-      // The judgement flash fades on its own so a miss does not linger.
+      // The judgement flash fades on its own so it does not linger.
       if (judgeRef.current) {
         const age = sNow - (a.ja ?? 0);
         const show = a.j && age < 650;
@@ -422,17 +369,32 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
             className="absolute inset-y-2 w-16 -translate-x-1/2 rounded-xl border-2 border-white/40 bg-white/10"
             style={{ left: `${HIT_AT}%` }}
           />
-          {Array.from({ length: CUES_DRAWN }, (_, k) => (
-            <div
-              key={k}
-              ref={(node) => { cueRefs.current[k] = node; }}
-              style={{ opacity: 0, left: '100%' }}
-              className="absolute top-1/2 grid h-11 w-11 -translate-x-1/2 -translate-y-1/2 place-items-center
-                         rounded-xl text-lg font-bold leading-none will-change-[left]
-                         data-[cue=left]:bg-yellow-400 data-[cue=left]:text-neutral-950
-                         data-[cue=right]:bg-blue-400 data-[cue=right]:text-neutral-950"
-            />
-          ))}
+          {/* The queue. Each cue is keyed by its ABSOLUTE index, so answering
+              one unmounts the head, leaves every other tile in place, and lets
+              CSS slide them all one slot to the left. One spare is rendered off
+              the right edge so the arrow joining the back of the queue slides
+              in rather than appearing out of nothing. */}
+          {Array.from({ length: CUES_SHOWN + 1 }, (_, k) => {
+            const index = (mine?.b ?? 0) + k;
+            const side = sideOf(snap?.sides, index);
+            return (
+              <div
+                key={index}
+                data-cue={side === 0 ? 'left' : 'right'}
+                style={{
+                  left: `${HIT_AT + k * CUE_GAP}%`,
+                  opacity: k === 0 ? 1 : Math.max(0.3, 1 - k * 0.13),
+                }}
+                className="absolute top-1/2 grid h-11 w-11 -translate-x-1/2 -translate-y-1/2 place-items-center
+                           rounded-xl text-lg font-bold leading-none will-change-[left]
+                           transition-[left,opacity] duration-150 ease-out
+                           data-[cue=left]:bg-yellow-400 data-[cue=left]:text-neutral-950
+                           data-[cue=right]:bg-blue-400 data-[cue=right]:text-neutral-950"
+              >
+                {side === 0 ? ARROW.left : ARROW.right}
+              </div>
+            );
+          })}
           <p
             ref={judgeRef}
             data-grade="none"
@@ -441,9 +403,7 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
                        data-[grade=perfect]:text-emerald-300
                        data-[grade=good]:text-sky-300
                        data-[grade=ok]:text-neutral-300
-                       data-[grade=miss]:text-red-400
-                       data-[grade=wrong]:text-red-400
-                       data-[grade=splash]:text-amber-400"
+                       data-[grade=wrong]:text-red-400"
           />
         </div>
 

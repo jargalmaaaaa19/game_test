@@ -5,7 +5,7 @@
 //   node tools/swim.e2e.mjs
 
 import { io } from 'socket.io-client';
-import { TIER, beatTime, sideOf } from '../shared/events/freestyle_swim.js';
+import { sideOf } from '../shared/events/freestyle_swim.js';
 
 const URL = process.env.SMOKE_URL || 'http://localhost:3200';
 
@@ -36,34 +36,37 @@ const waitFor = (s, event, ms = 90_000) =>
   });
 
 /**
- * Plays like the real client: reads its own next cue off the snapshot and
- * strokes on the beat, `offset` ms late. `wrongSide` catches the water
- * backwards every few strokes.
+ * Plays like the real client: answers the cue at the front of its own queue,
+ * every `gap` ms. `wrongEvery` catches the water backwards every few strokes.
+ *
+ * The queue pointer comes off the SNAPSHOT rather than a clock, which it can
+ * now afford to: nothing expires, so a pointer that is a tick stale costs
+ * nothing but a tick. Under the old timed stream that lag was most of the
+ * window and the swimmer had to predict the beat instead.
  */
-function autoSwimmer(socket, playerId, { offset = 0, wrongEvery = 0 }, play, clock) {
+function autoSwimmer(socket, playerId, { gap = 260, wrongEvery = 0 }, play, clock) {
   let strokes = 0;
+  let beat = 0;
   let done = false;
+
   socket.on('game:snapshot', ({ s }) => {
-    if (s.a?.[playerId]?.d) done = true;
+    const a = s.a?.[playerId];
+    if (!a) return;
+    if (a.d) done = true;
+    beat = a.b;
   });
 
-  // Drive off the CLOCK, not off the snapshot's beat pointer. A real player
-  // follows the cue they can see; waiting for the server to tell you which beat
-  // is next costs a tick plus a latency, which is most of a 70ms window.
-  const schedule = (i) => {
-    const due = beatTime(play.state.s, i) + offset;
-    const wait = due - clock();
-    if (wait < -1_000 || i >= play.state.sides.length) return;
-    setTimeout(() => {
-      if (done) return;
+  const stroke = () => {
+    if (done) return;
+    if (clock() >= play.state.s) {
       strokes += 1;
-      const correct = sideOf(play.state.sides, i);
+      const correct = sideOf(play.state.sides, beat);
       const wrong = wrongEvery && strokes % wrongEvery === 0;
       socket.emit('game:input', { s: wrong ? 1 - correct : correct });
-      schedule(i + 1);
-    }, Math.max(0, wait));
+    }
+    setTimeout(stroke, gap);
   };
-  schedule(0);
+  setTimeout(stroke, Math.max(0, play.state.s - clock()));
 }
 
 const run = async () => {
@@ -94,8 +97,8 @@ const run = async () => {
   const offset = play.t - Date.now();
   const clock = () => Date.now() + offset;
 
-  autoSwimmer(host, room.playerId, { offset: 0 }, play, clock);
-  autoSwimmer(guest, j1.playerId, { offset: TIER.perfect + 30 }, play, clock); // reliably "good", never perfect
+  autoSwimmer(host, room.playerId, { gap: 260 }, play, clock);
+  autoSwimmer(guest, j1.playerId, { gap: 520 }, play, clock); // correct, but a laboured cadence
   // `idle` never strokes.
 
   let last = null;
@@ -109,7 +112,9 @@ const run = async () => {
 
   check('the on-beat swimmer finished', state.ace?.d === 1, state.ace);
   check('the idle swimmer never left the wall', state.idle?.x === 0 && state.idle?.d === 0, state.idle);
-  check('idle beats were charged as misses', state.idle?.b > 20, state.idle?.b);
+  // The queue WAITS. An idle swimmer's cue is still cue zero at the end of the
+  // round — the water is what punished them, not a stack of charged misses.
+  check('an idle swimmer loses no cues, only the race', state.idle?.b === 0, state.idle?.b);
   check(
     'on-beat beat late',
     state.late?.d === 1 ? state.ace.t < state.late.t : state.ace.x > state.late.x,
