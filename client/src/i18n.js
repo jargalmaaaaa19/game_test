@@ -13,6 +13,11 @@ const mn = {
   inviteHint: 'Найзаа урьвал тэр шууд өрөөнд орно',
   inviteHintWeb: 'Аппаас гадуур урих боломжгүй — кодоо хуваалцаарай',
   joiningInvite: 'Урилгаар өрөөнд орж байна…',
+  startingSolo: 'Тэмцээн эхэлж байна…',
+  // The name a player who never opened the picker races under. Without it the
+  // server calls them Athlete 1 — the same series it gives the bots — and they
+  // cannot find themselves on any scoreboard.
+  youAthlete: 'Та',
   cancel: 'Болих',
   copied: 'Хуулагдлаа',
 
@@ -142,6 +147,8 @@ const en = {
   inviteHint: 'They join the room straight from the invite',
   inviteHintWeb: 'Invites need the Usion app — share the code instead',
   joiningInvite: 'Joining the room you were invited to…',
+  startingSolo: 'Starting your race…',
+  youAthlete: 'You',
   cancel: 'Cancel',
   copied: 'Copied',
 
