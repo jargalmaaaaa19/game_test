@@ -12,7 +12,7 @@ import { EVENT_CATALOG } from '../shared/events/index.js';
 import { PLACEMENT_POINTS } from '../shared/scoring.js';
 import { RUNWAY_M, IDEAL_ANGLE_DEG, angleAt } from '../shared/events/long_jump.js';
 import { aimAt, powerAt } from '../shared/events/archery.js';
-import { beatTime, sideOf } from '../shared/events/freestyle_swim.js';
+import { sideOf } from '../shared/events/freestyle_swim.js';
 
 const URL = process.env.SMOKE_URL || 'http://localhost:3200';
 
@@ -141,22 +141,23 @@ function drive(socket, playerId, tier, play, clock) {
     }
 
     case 'freestyle_swim': {
-      // Off the clock, not the snapshot pointer: a 70ms window does not survive
-      // a tick plus a latency of waiting to be told which beat is next.
+      // The row is a queue that waits for the player, so there is nothing to
+      // time against: stroke at a cadence and answer whatever is at the head of
+      // it. A worse athlete simply strokes slower, which is exactly what the
+      // arm cycle charges for.
+      let beat = 0;
       let done = false;
-      listen(({ s }) => { if (s.a?.[playerId]?.d) done = true; });
-      const offset = slop * 110; // ms late
-      const schedule = (i) => {
-        if (i >= play.state.sides.length) return;
-        const wait = beatTime(play.state.s, i) + offset - clock();
-        if (wait < -1_000) return;
-        track(setTimeout(() => {
-          if (done) return;
-          socket.emit('game:input', { s: sideOf(play.state.sides, i) });
-          schedule(i + 1);
-        }, Math.max(0, wait)));
-      };
-      schedule(0);
+      listen(({ s }) => {
+        const a = s.a?.[playerId];
+        if (!a) return;
+        if (a.d) done = true;
+        if (a.b > beat) beat = a.b; // ours runs a round trip ahead in between
+      });
+      track(setInterval(() => {
+        if (done || clock() < play.state.s) return;
+        socket.emit('game:input', { s: sideOf(play.state.sides, beat) });
+        beat += 1;
+      }, 260 + slop * 420));
       break;
     }
 

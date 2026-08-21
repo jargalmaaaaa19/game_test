@@ -9,9 +9,18 @@ import { defaultIdentity } from './identity.js';
  * socket, which is what makes a room testable without a network.
  */
 // What a bot seat is worth, cycled in order so the first bot is always the one
-// worth beating. Read by the play tick, which hands it to the event's own
-// `botInput`.
-const BOT_SKILL = [0.88, 0.72, 0.6, 0.8, 0.52, 0.66, 0.84, 0.58, 0.74];
+// worth beating and the third is one a beginner can beat. Read by the play
+// tick, which hands it to the event's own `botInput`.
+//
+// The old table ran 0.52 to 0.88 and every value in it played FLAWLESSLY —
+// difficulty only ever set a bot's pace, so the weakest seat in the room was a
+// slow machine that never fumbled a side, never stumbled, never fouled. That
+// is unbeatable in the way that matters: the human makes mistakes and the
+// thing they are racing does not. `shared/bots.js` now spends the same dial on
+// fallibility as well as pace, and the table is spread wider to use it.
+//
+// NOTHING here is 1: difficulty 1 means flawless, and no seat should be.
+const BOT_SKILL = [0.86, 0.64, 0.42, 0.76, 0.33, 0.55, 0.8, 0.48, 0.68];
 
 export class Room {
   constructor({ id, code, maxPlayers = MAX_PLAYERS, now }) {

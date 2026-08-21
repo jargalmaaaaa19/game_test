@@ -311,20 +311,47 @@ test('the wire snapshot is compact and quantized', () => {
   assert.equal(a.stage, 'run');
 });
 
-test('a strong bot hits green; a weak one settles for orange', () => {
-  for (const [difficulty, want] of [[1, KIND.PERFECT], [0, KIND.GOOD]]) {
-    const state = fresh();
-    const a = state.athletes.ace;
-    let at = live;
-    for (let i = 0; i < 400 && a.stage === 'run'; i += 1) {
-      const input = longJump.botInput(state, 'ace', difficulty, at);
-      if (input) longJump.applyInput(state, 'ace', input, at);
-      longJump.step(state, 0.05, at);
-      at += 50;
-    }
-    assert.equal(a.jumps.length, 1, `difficulty ${difficulty} never jumped`);
-    assert.equal(a.jumps[0].kind, want, `difficulty ${difficulty} landed in the wrong band`);
+/** A full round of three attempts at the given skill, and what they were worth. */
+function botRound(difficulty, id = 'ace') {
+  const state = fresh();
+  const a = state.athletes[id];
+  let at = live;
+  for (let i = 0; i < 2_000 && a.stage !== 'done'; i += 1) {
+    const input = longJump.botInput(state, id, difficulty, at);
+    if (input) longJump.applyInput(state, id, input, at);
+    longJump.step(state, 0.05, at);
+    at += 50;
   }
+  return a;
+}
+
+test('a flawless bot hits green every time', () => {
+  const a = botRound(1);
+  assert.equal(a.jumps.length, ATTEMPTS, 'the bot never finished its round');
+  assert.deepEqual(a.jumps.map((j) => j.kind), [KIND.PERFECT, KIND.PERFECT, KIND.PERFECT]);
+});
+
+test('a weak bot settles for orange, and sometimes runs through the board', () => {
+  // Difficulty 0 is a player who cannot read the gauge: it stabs early and
+  // takes the orange jump, or leaves it too late and fouls. What it never does
+  // is find green — that is what the top of the dial is buying.
+  const seen = new Set();
+  for (const id of ['ace', 'ok', 'idle']) {
+    for (const jump of botRound(0, id).jumps) seen.add(jump.kind);
+  }
+  assert.ok(!seen.has(KIND.PERFECT), 'a hopeless bot found green');
+  assert.ok(seen.has(KIND.GOOD), 'a hopeless bot never completed a jump at all');
+  assert.ok(seen.has(KIND.FOUL), 'no bot ever fouled — the board was a risk only humans carried');
+});
+
+test('the skill dial is a ladder, not a switch', () => {
+  // The point of the rebuild. Every bot in the table used to jump flawlessly
+  // and only the SPEED of the run-up moved, so a field of them was a wall no
+  // human could get through. Best-of-three has to fall as the dial does.
+  const best = [1, 0.7, 0.4, 0].map((d) => botRound(d).best);
+  assert.ok(best[0] >= best[1], `${best[0]} then ${best[1]}`);
+  assert.ok(best[1] >= best[3], `${best[1]} then ${best[3]}`);
+  assert.ok(best[0] > best[3] + 1, `the top and bottom of the dial jump the same: ${best}`);
 });
 
 console.log(failures === 0 ? '\nall checks passed\n' : `\n${failures} check(s) failed\n`);

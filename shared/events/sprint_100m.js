@@ -9,6 +9,8 @@
 // still moves you, badly — that is what makes alternation a skill rather than a
 // tapping-speed contest.
 
+import { botJitter, botSlips } from '../bots.js';
+
 export const RACE_DISTANCE = 100; // metres
 export const COUNTDOWN_MS = 3_000; // "on your marks" before the gun
 export const MAX_RACE_MS = 25_000; // hard stop; stragglers are placed by distance
@@ -28,6 +30,12 @@ const BROKEN_STRIDE_DECAY = 0.98; // tapping before your foot lands costs you
 const FALSE_START_PENALTY_MS = 600;
 const MAX_SPEED = 12.4; // ~Bolt's peak, so a perfect run lands near 10s
 const DRAG = 1.15; // exponential velocity decay per second
+
+// What the bot skill dial is worth at the weak end: how far a stride wanders
+// from the cadence it was aiming for, and how often the same thumb goes down
+// twice. Both scale to nothing at difficulty 1. See `shared/bots.js`.
+const BOT_WOBBLE_MS = 55;
+const BOT_STUMBLE_CHANCE = 0.12;
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
@@ -179,11 +187,31 @@ export default {
   },
 
   /** Bot seats and stalled-player fill. Alternates with human-ish jitter. */
+  /**
+   * A bot's run: a cadence it is aiming for, the steadiness to hold it, and the
+   * occasional wrong thumb.
+   *
+   * The stumble is the point of this. A bot that merely ran a SLOWER metronome
+   * was still running a perfect one, and `rhythmFactor` paid it for that — the
+   * whole field held 1.15 while the human racing them dropped to 0.80 the
+   * moment their thumbs crossed. A weak bot's stride now wanders, which costs
+   * it that same bonus, and every so often it puts the same foot down twice.
+   */
   botInput(state, botId, difficulty = 0.75, now = 0) {
     const a = state.athletes[botId];
     if (!a || a.done || now < state.startsAt) return null;
-    const targetGap = 150 - difficulty * 55; // 150ms (weak) .. 95ms (strong)
+    const shaky = clamp(1 - difficulty, 0, 1);
+
+    // 100ms (strong) .. 230ms (hopeless), and it does not hold it evenly.
+    // The old spread was 95..150, which sounds like a range and is not one:
+    // the impulse per second is flat below the ideal cadence, so every bot
+    // in the table ran within half a second of every other and the whole
+    // field came home ahead of a real player.
+    const targetGap = 100 + 210 * shaky ** 1.15
+      + botJitter(botId, a.steps, BOT_WOBBLE_MS * shaky, 1);
     if (a.lastStepAt && now - a.lastStepAt < targetGap) return null;
-    return { f: a.foot === 1 ? 0 : 1 };
+
+    const stumble = botSlips(botId, a.steps, BOT_STUMBLE_CHANCE * shaky ** 1.2, 2);
+    return { f: stumble ? a.foot : (a.foot === 1 ? 0 : 1) };
   },
 };

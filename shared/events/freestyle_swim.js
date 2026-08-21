@@ -4,70 +4,97 @@
 // as the authority; the client runs the SAME module to draw the lane, so the
 // arrow the player answers is the arrow the server scores.
 //
-// A PIANO ROLL PINNED TO THE POOL. Every cue belongs to a MARK on the water —
-// cue i is at `i * STROKE_M` metres — not to a moment on a clock. It is the
-// swimmer who moves, and the lane scrolls because they do:
+// A QUEUE, NOT A TIMELINE. Arrows sit in a row with the next one on the line,
+// and a stroke answers whichever arrow is at the head of it. There is no window
+// to hit and nothing to wait for: press, and that arrow is gone and the row
+// comes on. The row therefore moves at the speed of the player's hands and at
+// no other speed — the swimmer has no vote in it and neither does any clock.
 //
-//   - stroke well and you speed up, so the next arrow arrives sooner, so you
-//     stroke sooner again. Tapping fast IS swimming fast.
-//   - let one go by unstruck and it is a miss: the water takes speed back and
-//     the arrows immediately start arriving slower.
-//   - stop, and you glide to a halt with the arrows stopping alongside you.
+// It took three tries to get here. The arrows were pinned to the water first,
+// so a swimmer going well got them FASTER — the display sped up exactly when it
+// became hardest to read. Then they were pinned to a travel time with a window
+// straddling the line, which fixed the reading but kept the waiting: the player
+// could see the arrow coming, knew which side it wanted, and had to sit on
+// their hands until it arrived. A cue you have already read is a cue you should
+// be allowed to answer.
 //
-// That is the whole reason the cues are measured in metres. A clock-driven
-// stream runs at its own pace no matter how the player is doing, which is how
-// the arrows ended up crossing the screen faster than anyone could read them
-// and charging a miss for every one that got away. Pinned to distance, the lane
-// can only ever move as fast as the swimmer it belongs to.
+// SO THE RATE CEILING MOVED INTO THE STROKE. The window used to be what stopped
+// a masher — nothing could be answered before it arrived, which capped the
+// stroke rate at one per travel time. With the window gone, that job belongs to
+// the arm: a stroke needs time to load, so one taken half a cycle after the
+// last is worth half as much. Impulse per SECOND is therefore flat at or below
+// the cycle, and hammering the buttons twice as fast buys exactly nothing.
+// (This is the sprint's economics, and it is the same economics for the same
+// reason: a rate limit hands a script the maximum legal rate, and the script
+// then beats every human. The sprint learned that the hard way.)
 //
-// DRAG IS QUADRATIC, and it has to be. With cues every STROKE_M metres, the
-// impulse a swimmer collects per second is proportional to their speed — so
-// against linear drag every speed is an equilibrium and the race either runs
-// away to infinity or dies to zero on the third decimal place of a constant.
-// Against v², there is exactly one stable speed for a given quality of stroke,
-// which is the honest way to say "swim better, go faster".
+// The pattern of sides is random, so a hammered button is the wrong side half
+// the time, and a wrong side costs more than a right one earns. Between the two
+// there is no way to play this by speed alone.
+//
+// DRAG IS QUADRATIC. Against linear drag the field spreads without bound — a
+// player who strokes twice as often ends up twice as fast, and the last swimmer
+// is still mid-pool when the round times out. Against v² that same doubling is
+// worth √2, which keeps a beginner inside the round without taking anything
+// away from the player who reads best.
+
+import { botJitter, botSlips } from '../bots.js';
 
 export const DISTANCE_M = 50;
 export const COUNTDOWN_MS = 2_500;
 export const MAX_RACE_MS = 42_000;
 
-// How far apart the arrows sit on the water, and how big a mark counts as
-// struck. The window is ±0.32m, which at racing pace is about a quarter of a
-// second — long enough to read an arrow, short enough to miss one.
-export const STROKE_M = 0.62;
-export const REACH_M = 0.32;
+// A full arm cycle: the gap at which a stroke is worth everything it can be.
+//
+// Strokes closer together than this are RUSHED and scale down in proportion,
+// which is what makes the impulse-per-second flat below it — see the head note.
+// Strokes further apart are worth full value each, but there are fewer of them,
+// so the fastest way down the pool is to hold this cadence exactly. That is the
+// rhythm the event is really asking for, and at ~3.8 strokes a second it is a
+// rhythm a thumb can actually hold.
+export const STROKE_CYCLE_MS = 260;
 
 // How long the pattern is before it repeats. The cue index wraps, so the lane
 // is endless while the wire still carries a fixed, small array — and ninety
 // arrows is far more than anyone memorises inside one heat.
 export const PATTERN_LEN = 90;
 
-// The push off the wall. Without it a swimmer starts at a dead stop, and a
-// lane that scrolls with the swimmer would never bring them their first arrow.
+// The push off the wall, so nobody starts from a dead stop.
 const PUSH_OFF = 1.4;
 
-// What a stroke is worth, struck at the near edge of its window versus scraping
-// the far one. Steady speed is IMPULSE / (STROKE_M * DRAG), so these read as
-// about 2.6 m/s for a swimmer who meets every arrow early and 1.3 for one who
-// is always late — a 19-second 50m against a 38-second one, both inside the
-// round.
-const IMPULSE_FAST = 0.5;
-const IMPULSE_SLOW = 0.25;
+// What a fully loaded stroke is worth. Steady speed is
+// sqrt(IMPULSE_FULL * strokes-per-second / DRAG), which at the ideal cadence is
+// about 2.75 m/s — an 18-second 50m — falling to about 1.3 for a swimmer
+// managing one stroke a second, which still gets home inside the round.
+const IMPULSE_FULL = 0.61;
 
 // Water resistance, per metre per second SQUARED — see the note at the top.
 const DRAG = 0.31;
 const MAX_SPEED = 3.2; // m/s — a hard ceiling, well over world-record pace
 
-// A missed arrow costs speed; the wrong side costs more, because you have
-// caught the water backwards; a stroke at nothing at all is a splash.
-const PENALTY = { miss: 0.86, wrong: 0.78, splash: 0.93 };
+// What catching the water backwards costs, as the fraction of speed kept.
+const WRONG_PENALTY = 0.8;
+
+// Wrong sides that come one after another bite harder: the penalty is raised to
+// this power per repeat, so a second costs about a third more than the first
+// and a fifth costs double. Capped, because a player already stalled does not
+// need the hole dug deeper — and one clean stroke clears it.
+const STREAK_BITE = 0.35;
+const STREAK_CAP = 4;
+
+// What the bot skill dial is worth at the weak end: how much slower than the
+// ideal cycle a hopeless bot strokes, how much its cadence wanders, and how
+// often it catches an arrow on the wrong side. All three scale to nothing at
+// difficulty 1, which is the only clean meaning for the top of a skill dial.
+// See `shared/bots.js` for why the luck is a hash and not a stream.
+const BOT_DRAG_MS = 620;
+const BOT_WOBBLE_MS = 90;
+const BOT_WRONG_CHANCE = 0.13;
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 
-const EDGE_EPS = 1e-9; // see `promptnessAt`
-
-/** Where cue `i` sits, in metres from the wall. */
-export const cueAt = (i) => (i + 1) * STROKE_M;
+/** A penalty, sharpened by how many mistakes came immediately before it. */
+const bite = (base, streak) => base ** (1 + STREAK_BITE * Math.min(streak, STREAK_CAP));
 
 /**
  * The side cue `i` calls for: 0 = left, 1 = right.
@@ -79,47 +106,22 @@ export const sideOf = (sides, i) =>
   (sides?.length ? sides[((i % sides.length) + sides.length) % sides.length] : i % 2);
 
 /**
- * How well placed a stroke at `x` is against cue `i`: 1 at the near edge of the
- * window, 0 at the far one, null outside it.
+ * How much of a stroke was actually in the water, from the gap since the last
+ * one: 1 for a full arm cycle, proportionally less for anything rushed.
  *
- * Meeting an arrow EARLY is what pays. That is the feedback loop the whole
- * event runs on — an early stroke is a faster swimmer, a faster swimmer meets
- * the next arrow sooner, and the lane winds itself up under a player who is
- * reading ahead.
+ * This is the whole economy of the event and it has to be the ECONOMICS rather
+ * than a rate limit. A bare "ignore strokes closer than N ms" hands a script
+ * the fastest legal cadence and the script wins; scaling the value instead
+ * makes the fastest legal cadence worth exactly what the ideal one is worth,
+ * and the wrong sides a fast hand cannot avoid do the rest.
  */
-export function promptnessAt(i, x) {
-  const gap = x - cueAt(i);
-  // The edges are inclusive to within a rounding error, and deliberately so:
-  // `cueAt(3) - REACH_M` does not give back exactly -REACH_M when subtracted
-  // again, so a swimmer sitting exactly on the near edge tested as out of
-  // reach. A window a player can watch themselves enter must not turn on a
-  // float's last bit.
-  if (gap < -REACH_M - EDGE_EPS || gap > REACH_M + EDGE_EPS) return null;
-  return clamp((REACH_M - gap) / (2 * REACH_M), 0, 1);
-}
+export const strokeValue = (gap) => clamp(gap / STROKE_CYCLE_MS, 0, 1);
 
-/** How the client labels a stroke. */
-export function gradeFor(promptness) {
-  if (promptness >= 0.72) return 'perfect';
-  if (promptness >= 0.36) return 'good';
-  return 'ok';
-}
-
-/**
- * Charge every arrow the swimmer has already gone past unstruck.
- *
- * Called from BOTH `step` and `applyInput`: expiring first makes a press
- * independent of where it happens to fall between ticks, which is what stopped
- * a player being told "early" for a stroke that was on time for the next cue.
- */
-function expirePassed(a) {
-  while (a.x > cueAt(a.beat) + REACH_M) {
-    a.v *= PENALTY.miss;
-    a.hits.miss += 1;
-    a.combo = 0;
-    a.last = 'miss';
-    a.beat += 1;
-  }
+/** How the client labels a stroke — what it says is "was that a full stroke?" */
+export function gradeFor(value) {
+  if (value >= 0.9) return 'perfect';
+  if (value >= 0.55) return 'good';
+  return 'ok'; // in the water, but rushed: the arm never loaded
 }
 
 export default {
@@ -127,7 +129,9 @@ export default {
 
   initState(seats, rng, now) {
     // Mixed, not taking turns. Each cue's side is drawn independently, so the
-    // pattern cannot be second-guessed and every arrow has to be READ.
+    // pattern cannot be second-guessed and every arrow has to be READ. It is
+    // also the real answer to button-mashing: a hammered side is right half the
+    // time, and a wrong side costs more than a right one earns.
     //
     // The one constraint is a cap of three of a side in a row. Unconstrained
     // coin flips throw runs of six often enough that players read them as the
@@ -143,16 +147,19 @@ export default {
       sides.push(side);
     }
 
+    const startsAt = now + COUNTDOWN_MS;
     const athletes = {};
     for (const { playerId, lane } of seats) {
       athletes[playerId] = {
         lane,
         x: 0,
-        v: PUSH_OFF, // off the wall, so the first arrow is already on its way
-        beat: 0, // the next unstruck cue
+        v: PUSH_OFF,
+        beat: 0, // the arrow at the head of the row
+        strokeAt: 0, // when the last stroke went in, for the arm cycle
         combo: 0,
         bestCombo: 0,
-        hits: { perfect: 0, good: 0, ok: 0, miss: 0, wrong: 0 },
+        missStreak: 0,
+        hits: { perfect: 0, good: 0, ok: 0, wrong: 0 },
         last: null, // most recent judgement, for the client's flash
         lastAt: 0,
         done: false,
@@ -160,8 +167,8 @@ export default {
       };
     }
     return {
-      startsAt: now + COUNTDOWN_MS,
-      endsAt: now + COUNTDOWN_MS + MAX_RACE_MS,
+      startsAt,
+      endsAt: startsAt + MAX_RACE_MS,
       sides,
       athletes,
     };
@@ -170,46 +177,40 @@ export default {
   /**
    * One stroke. `input.s` is the side pressed (0 left, 1 right).
    *
-   * Judged on WHERE the swimmer is, never on when the press arrived, so a
-   * player's ping cannot cost them an arrow: the pool does not move while the
-   * packet is in flight.
+   * Always answers the arrow at the head of the row, whatever the clock says.
+   * Nothing here can reject a press for being early, because there is no longer
+   * anything for it to be early FOR: the arrow the player is looking at is the
+   * arrow this answers, and it goes whether they got the side right or not.
    */
   applyInput(state, playerId, input, now) {
     const a = state.athletes[playerId];
     if (!a || a.done || now < state.startsAt) return;
     if (!input || (input.s !== 0 && input.s !== 1)) return;
 
-    expirePassed(a);
-
-    const promptness = promptnessAt(a.beat, a.x);
-    if (promptness === null) {
-      // Nothing within reach: a stroke at open water. It costs a little speed
-      // and consumes no cue, which is what stops both buttons being hammered —
-      // and it has to be the ECONOMICS rather than a rate limit, or a script
-      // simply presses at the maximum legal rate and beats every human.
-      a.v *= PENALTY.splash;
-      a.last = 'splash';
-      a.lastAt = now;
-      return;
-    }
+    // The first stroke off the wall is a full one: there is no previous stroke
+    // to have rushed, and charging one for it would make the start a lottery.
+    const value = strokeValue(a.strokeAt ? now - a.strokeAt : STROKE_CYCLE_MS);
+    a.strokeAt = now;
 
     if (input.s !== sideOf(state.sides, a.beat)) {
-      a.v *= PENALTY.wrong;
+      a.missStreak += 1;
+      a.v *= bite(WRONG_PENALTY, a.missStreak);
       a.hits.wrong += 1;
       a.combo = 0;
       a.last = 'wrong';
     } else {
-      a.v = Math.min(a.v + IMPULSE_SLOW + (IMPULSE_FAST - IMPULSE_SLOW) * promptness, MAX_SPEED);
-      const grade = gradeFor(promptness);
+      a.missStreak = 0; // one clean stroke and the hole stops getting deeper
+      a.v = Math.min(a.v + IMPULSE_FULL * value, MAX_SPEED);
+      const grade = gradeFor(value);
       a.hits[grade] += 1;
       a.combo += 1;
       a.bestCombo = Math.max(a.bestCombo, a.combo);
       a.last = grade;
     }
     a.lastAt = now;
-    // Struck or fumbled, the arrow is behind you now. A cue that stayed put
-    // after a wrong side would sit in the water while the swimmer drifted past
-    // it, and the lane would stall instead of flowing.
+    // Answered or fumbled, that arrow is spent. A cue that stayed at the head
+    // after a wrong side would have to be answered twice, and the row would
+    // stall on the player's mistake instead of carrying on past it.
     a.beat += 1;
   },
 
@@ -219,12 +220,10 @@ export default {
     for (const a of Object.values(state.athletes)) {
       if (a.done) continue;
 
-      // Quadratic, not exponential: with cues pinned to distance, only a drag
-      // that grows with speed gives the race a stable pace. See the head note.
+      // Quadratic, not exponential: see the head note. A stroke rate buys the
+      // square root of itself, which is what keeps the field together.
       a.v = Math.max(0, a.v - DRAG * a.v * a.v * dt);
       a.x += a.v * dt;
-
-      expirePassed(a);
 
       if (a.x >= DISTANCE_M) {
         a.x = DISTANCE_M;
@@ -263,8 +262,12 @@ export default {
         l: at.lane,
         x: Math.round(at.x * 100) / 100,
         v: Math.round(at.v * 100) / 100,
+        // How far down the row this swimmer has got. The client draws the queue
+        // from here and animates the slide itself, because the slide is
+        // decoration now — there is no arrival for it to be lying about.
         b: at.beat,
         c: at.combo,
+        m: at.missStreak,
         j: at.last,
         ja: at.lastAt,
         d: at.done ? 1 : 0,
@@ -277,15 +280,29 @@ export default {
     return { s: state.startsAt, e: state.endsAt, sides: state.sides, a };
   },
 
-  /** Bot seats and stalled-player fill: meets the arrows, more or less early. */
+  /**
+   * Bot seats and stalled-player fill: strokes at a cadence, and sometimes
+   * catches the water on the wrong side.
+   *
+   * Skill is read on three axes, all keyed to the BEAT so a bot polled several
+   * times inside one tick does not get several rolls of the dice. A strong
+   * swimmer holds the arm cycle almost exactly and rarely errs; a weak one
+   * strokes well inside it, wanders, and fumbles one arrow in eight.
+   */
   botInput(state, botId, difficulty = 0.75, now = 0) {
     const a = state.athletes[botId];
     if (!a || a.done || now < state.startsAt) return null;
-    // Where in the window this bot likes to strike: a strong one meets the
-    // arrow as it arrives, a weak one scrapes the back of the window and swims
-    // slower for it. Never at the very edge — that is a reaction no human has.
-    const aim = REACH_M - 2 * REACH_M * (0.15 + (1 - difficulty) * 0.7);
-    if (a.x - cueAt(a.beat) < aim) return null;
-    return { s: sideOf(state.sides, a.beat) };
+    const shaky = clamp(1 - difficulty, 0, 1);
+
+    // Stroking SLOWER than the cycle is what makes a weak bot slow: each stroke
+    // is worth full value, there are simply fewer of them. Stroking faster
+    // would gain it nothing, which is exactly the point of the economy.
+    const gap = STROKE_CYCLE_MS + BOT_DRAG_MS * shaky ** 1.3
+      + botJitter(botId, a.beat, BOT_WOBBLE_MS * shaky, 1);
+    if (a.strokeAt && now - a.strokeAt < gap) return null;
+
+    const side = sideOf(state.sides, a.beat);
+    const fumble = botSlips(botId, a.beat, BOT_WRONG_CHANCE * shaky ** 1.2, 2);
+    return { s: fumble ? 1 - side : side };
   },
 };

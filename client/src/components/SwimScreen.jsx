@@ -1,11 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-  DISTANCE_M,
-  REACH_M,
-  STROKE_M,
-  cueAt,
-  sideOf,
-} from '@shared/events/freestyle_swim.js';
+import { DISTANCE_M, sideOf } from '@shared/events/freestyle_swim.js';
 import { babylon } from '../avatar3d/portraits.js';
 import { createSwimArena } from '../arena3d/swimArena.js';
 import { BUFFER_MS, sampleAt, serverNow } from '../net/interpolation.js';
@@ -21,19 +15,47 @@ import SwimLanes from './SwimLanes.jsx';
 // width the lane happened to be. On a 390px phone that put the tiles 40px apart
 // and touching; on a 1200px monitor it put them 122px apart, which is the
 // "arrows are very far away" the lane was reported for. A wide screen should
-// show more of the water, not the same water stretched.
-const CUE_GAP_PX = 52;
+// show more of the row, not the same row stretched.
+//
+// The gap has to be bigger than the tile, and by a clear margin. At 52 to a
+// 44px tile there were eight pixels of air between one arrow and the next, so
+// the row read as a solid bar of colour and the one standing on the line was
+// lost in the crowd behind it. At 82 each arrow is an object with space around
+// it, and the arrow being answered is plainly the arrow ON the line.
+const CUE_GAP_PX = 82;
 const CUE_TILE_PX = 44;
 
-// Enough tiles for the widest lane anyone will open this on. Any that fall
-// past the lookahead are simply hidden, so over-provisioning costs nine
-// invisible divs and nothing else.
+// ...but never so wide that the lane stops warning the player. A phone has
+// about 290px to the right of the line, which at the full gap is three and a
+// half arrows — under a second of reading at racing pace. Below this width the
+// gap gives way instead, because a row you cannot read ahead of is worse than a
+// row drawn tight. Wide lanes are unaffected: they show MORE arrows at the full
+// spacing rather than the same arrows stretched further apart.
+const MIN_LOOKAHEAD_ARROWS = 4.5;
+
+// Enough tiles for the widest lane anyone will open this on. Any that fall off
+// either end are simply hidden, so over-provisioning costs a few invisible divs
+// and nothing else.
 const CUES_DRAWN = 22;
 
-// Where the hit line sits across the lane, as a percentage of its width. An
-// arrow is struck as it crosses this; the shaded band around it is the window
-// the sim actually accepts.
-const HIT_AT = 18;
+// Where the line sits across the lane, as a percentage of its width. The head
+// of the row RESTS on it, so it marks the arrow being answered rather than a
+// place an arrow has to reach: far enough left that the queue behind it is
+// readable, far enough off the edge that the tile on it is not clipped.
+const HIT_AT = 16;
+
+// How long the row takes to slide one slot after a stroke. Decoration, and
+// nothing but: the arrow was answered the instant the thumb went down, and this
+// is only the row catching up to that. Short enough that a player stroking at
+// the arm cycle sees it settle before their next press, and a faster player
+// simply sees a faster row.
+const SLIDE_MS = 110;
+
+// How long a predicted stroke is allowed to stay ahead of the server before the
+// row gives up on it and snaps back. Longer than any round trip worth playing
+// on; short enough that a dropped input is not a lane stuck a beat ahead for
+// the rest of the race.
+const STALE_MS = 700;
 
 // The cue tiles carry an arrow, not a word: "БАРУУН" does not fit in a tile a
 // thumb's width across, and at speed a direction is read faster than a label
@@ -46,18 +68,27 @@ const RANK_INTERVAL_MS = 150;
 
 const MEDAL_TONE = ['#ffd23f', '#dbe4ee', '#e8834a'];
 
+const clamp01 = (v) => (v < 0 ? 0 : v > 1 ? 1 : v);
+
+/** Ease-out for the slide, so the row arrives rather than stopping dead. */
+const easeOut = (p) => 1 - (1 - p) * (1 - p);
+
 /**
  * 50m Backstroke.
  *
- * A piano roll pinned to the pool: every arrow is a mark on the water, and the
- * lane scrolls because the swimmer moves. Strike them as they cross the hit
- * line — early pays more than late — and the whole row speeds up under you; let
- * one go by and the water takes speed back and it all slows down.
+ * A queue of arrows with the next one resting on the line. Answer it — press,
+ * and it is gone — and the row comes on one place. Nothing has to arrive and
+ * nothing can be too early: the row moves at the speed of the player's hands
+ * and at no other speed, and the swimming is the consequence. Clean strokes
+ * wind the pace up; a fumbled side hands speed back to the water, and two in a
+ * row cost more than two apart.
  *
- * The lane is therefore ANIMATION and lives on rAF beside the pool, drawn from
- * the swimmer's own interpolated position. Distance, combo, times and the
- * standings sit on an interval, because a hidden tab stops rAF dead and a
- * frozen scoreboard reads as a crash. (Archery taught that one.)
+ * The slide is therefore DECORATION, and it is drawn from this device's own
+ * clock rather than the server's: the stroke was scored the instant the thumb
+ * went down, so waiting for the packet before moving the row would put a round
+ * trip between the press and the only feedback that matters. Distance, combo,
+ * times and the standings sit on an interval, because a hidden tab stops rAF
+ * dead and a frozen scoreboard reads as a crash. (Archery taught that one.)
  */
 export default function SwimScreen({ room, me, netRef, sendInput, event }) {
   const rootRef = useRef(null);
@@ -66,6 +97,7 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
   const laneRefs = useRef(new Map()); // flat fallback only
   const cueRefs = useRef([]);
   const laneRef = useRef(null);
+  const lineRef = useRef(null);
   const judgeRef = useRef(null);
   const clockRef = useRef(null);
   const placeRef = useRef(null);
@@ -73,6 +105,11 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
   const distRefs = useRef([]);
   const rafRef = useRef(0);
   const sigRef = useRef('');
+
+  // The row as this device believes it to be: the newest packet, plus the
+  // strokes the player has made since that the server has not answered yet.
+  const predRef = useRef(null);
+  const flashRef = useRef(-1e9);
 
   const drawnRef = useRef({});
   const rankRef = useRef([]);
@@ -134,8 +171,25 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
       const latest = net.buffer[net.buffer.length - 1]?.s;
       const a = latest?.a?.[myId];
       if (!a || a.d) return;
-      if (serverNow(net) < latest.s) return;
+      const sNow = serverNow(net);
+      if (sNow < latest.s) return;
       sendInput({ s: side });
+
+      // Move the row NOW. The sim does exactly this when the packet lands —
+      // spend the head arrow, whatever the clock says — so there is nothing to
+      // wait for and nothing that can come back refused. Waiting for the echo
+      // would put a whole round trip between the thumb and the arrow leaving,
+      // and a row that answers a beat late feels like one that is ignoring you.
+      //
+      // Right side or wrong, the arrow is spent either way: the sim consumes it
+      // too, and a row that only moved on correct strokes would be telling the
+      // player they had got away with a fumble.
+      const pred = predRef.current;
+      if (!pred) return;
+      pred.beat += 1;
+      pred.slideFrom = sNow;
+      pred.at = sNow;
+      flashRef.current = sNow;
     };
 
     const onKey = (e) => {
@@ -168,7 +222,7 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
       const now = serverNow(net);
 
       const sig = Object.values(latest.a ?? {})
-        .map((p) => `${p.d}:${p.t}:${p.b}:${p.c}:${Math.round(p.x)}`)
+        .map((p) => `${p.d}:${p.t}:${p.b}:${p.c}:${p.m}:${Math.round(p.x)}`)
         .join('|');
       if (sig !== sigRef.current) {
         sigRef.current = sig;
@@ -226,8 +280,9 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
       const started = sNow >= latest.s;
 
       // Positions are interpolated a fixed slice into the past so the swimmers
-      // glide at 60fps off a 20 Hz feed; the BEAT is read from the newest
-      // packet instead, because a cue drawn 100ms late is a cue judged wrong.
+      // glide at 60fps off a 20 Hz feed; the ROW is drawn from the newest
+      // packet instead, because an arrow drawn 100ms late is an arrow judged
+      // wrong.
       const smooth = sampleAt(net, net.lastServerT - BUFFER_MS, ['x', 'v']);
       const drawn = drawnRef.current;
 
@@ -286,35 +341,59 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
 
       if (!a) return;
 
-      // The lane, drawn from the swimmer's own position. Every arrow is a mark
-      // on the water at `cueAt(i)` metres, so the whole row slides left exactly
-      // as fast as the swimmer advances — press well and it speeds up under
-      // you, miss and it slows down. Nothing here is on a clock.
-      const swum = drawn[myId]?.x ?? a.x ?? 0;
+      // How far down the row this device believes it has got. The packet is the
+      // truth but it is a round trip old, so: adopt it whenever it has moved
+      // PAST us, and otherwise hold a prediction that is merely waiting to be
+      // confirmed. A stroke that never landed at all — dropped, or past the
+      // rate limit — is released by the staleness guard rather than left as a
+      // row stuck a beat ahead for the rest of the race.
+      let pred = predRef.current;
+      if (!pred) {
+        pred = predRef.current = { beat: a.b, slideFrom: sNow, at: sNow };
+      } else if (a.b > pred.beat || (a.b < pred.beat && sNow - pred.at > STALE_MS)) {
+        pred.beat = a.b;
+        pred.slideFrom = sNow;
+        pred.at = sNow;
+      }
 
-      // How much water fits, given that the GAP is the thing being held fixed.
+      // Where the head of the row is, in slots from the line: one slot to the
+      // right the instant a stroke lands, easing home to 0. Everything else in
+      // the row is that plus its place in the queue, so the whole lane is one
+      // number and a multiply — and at rest the head sits ON the line, because
+      // there is nothing left for it to travel towards.
+      const slide = 1 - easeOut(clamp01((sNow - pred.slideFrom) / SLIDE_MS));
       // Read every frame rather than cached: the lane is a flex child, and a
       // rotation or a keyboard opening resizes it without remounting anything.
       const laneW = laneRef.current?.clientWidth ?? 360;
-      const lookaheadM = Math.max(
-        STROKE_M * 2,
-        (STROKE_M * (100 - HIT_AT) * laneW) / (100 * CUE_GAP_PX),
-      );
+      const lineX = (laneW * HIT_AT) / 100;
+      const gap = Math.min(CUE_GAP_PX, (laneW - lineX) / MIN_LOOKAHEAD_ARROWS);
 
       for (let k = 0; k < CUES_DRAWN; k += 1) {
         const node = cueRefs.current[k];
         if (!node) continue;
-        const index = a.b + k;
-        const ahead = cueAt(index) - swum;
-        if (ahead > lookaheadM || ahead < -REACH_M * 3) {
+        const x = lineX + (k + slide) * gap;
+        if (x < -CUE_TILE_PX || x > laneW + CUE_TILE_PX) {
           node.style.opacity = '0';
           continue;
         }
-        const side = sideOf(latest.sides, index);
+        const side = sideOf(latest.sides, pred.beat + k);
         node.style.opacity = '1';
-        node.style.left = `${(HIT_AT + (ahead / lookaheadM) * (100 - HIT_AT)).toFixed(2)}%`;
+        node.style.left = `${x.toFixed(1)}px`;
         node.dataset.cue = side === 0 ? 'left' : 'right';
+        // The head of the row is ALWAYS the live one — that is the whole shape
+        // of the event now, so it is marked all the time rather than only once
+        // some window has opened around it.
+        node.dataset.live = k === 0 ? '1' : '0';
         node.textContent = side === 0 ? ARROW.left : ARROW.right;
+      }
+
+      // The line answers every stroke. The row moving is the real feedback, but
+      // at four strokes a second a player needs the hit to register somewhere
+      // they are already looking, without reading anything.
+      if (lineRef.current) {
+        const pulse = Math.max(0, 1 - (sNow - flashRef.current) / 220);
+        lineRef.current.style.transform = `translateX(-50%) scaleX(${(1 + pulse * 2.4).toFixed(2)})`;
+        lineRef.current.style.opacity = (0.5 + 0.5 * pulse).toFixed(2);
       }
 
       // The judgement flash fades on its own so it does not linger.
@@ -392,7 +471,7 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
 
       <div className={arenaOk ? 'relative px-4 pb-7' : 'pb-2'}>
         {/* The cue lane. One job: which side is coming, and when.
-            The judgement flashes INSIDE it, over the hit line, because that is
+            The judgement flashes INSIDE it, over the line, because that is
             where the player is already looking — as its own item in a row it
             was a third thing competing for a strip only wide enough for two. */}
         <div
@@ -402,13 +481,21 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
             arenaOk ? 'border-white/15 bg-black/55' : 'mt-5 border-neutral-800 bg-neutral-900/70',
           ].join(' ')}
         >
-          {/* The hit zone is the only thing that marks WHERE to press, and it
-              never changes — the cues stream through it. Making the cue light
-              up instead put the signal on a moving object that changes several
-              times a second. */}
+          {/* Everything left of the line is water already swum: answered arrows
+              leave that way, and shading it keeps the eye on the queue rather
+              than on the empty lane behind it. */}
           <div
-            className="absolute inset-y-2 w-16 -translate-x-1/2 rounded-xl border-2 border-white/40 bg-white/10"
-            style={{ left: `${HIT_AT}%` }}
+            className="absolute inset-y-0 left-0 bg-gradient-to-r from-black/55 to-transparent"
+            style={{ width: `${HIT_AT}%` }}
+          />
+          {/* THE LINE. Not a gate any more — a marker: the head of the queue
+              rests on it, and it says "this one, now". Nothing has to reach it,
+              so it can be exactly where the answered arrow leaves from. */}
+          <div
+            ref={lineRef}
+            className="absolute inset-y-1.5 w-[3px] rounded-full bg-white
+                       shadow-[0_0_14px_rgba(255,255,255,0.75)] will-change-transform"
+            style={{ left: `${HIT_AT}%`, transform: 'translateX(-50%)' }}
           />
           {/* The arrows. Plain nodes the render loop writes `left` on sixty
               times a second — they are animation, and a keyed React list that
@@ -420,11 +507,13 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
             <div
               key={k}
               ref={(node) => { cueRefs.current[k] = node; }}
+              data-live="0"
               style={{ opacity: 0, left: '100%' }}
               className="absolute top-1/2 grid h-11 w-11 -translate-x-1/2 -translate-y-1/2 place-items-center
                          rounded-xl text-lg font-bold leading-none will-change-[left]
                          data-[cue=left]:bg-yellow-400 data-[cue=left]:text-neutral-950
-                         data-[cue=right]:bg-blue-400 data-[cue=right]:text-neutral-950"
+                         data-[cue=right]:bg-blue-400 data-[cue=right]:text-neutral-950
+                         data-[live=1]:scale-110 data-[live=1]:ring-2 data-[live=1]:ring-white"
             />
           ))}
           <p
@@ -450,14 +539,23 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
               arenaOk ? 'text-white/85 [text-shadow:0_1px_4px_rgba(0,0,0,0.9)]' : 'text-neutral-400',
             ].join(' ')}
           />
-          <span
-            className={[
-              'shrink-0 text-xs tabular-nums',
-              arenaOk ? 'text-white/70 [text-shadow:0_1px_4px_rgba(0,0,0,0.9)]' : 'text-neutral-400',
-            ].join(' ')}
-          >
-            {t.swimCombo(mine?.c ?? 0)}
-          </span>
+          {/* Two mistakes in a row and the water is taking real speed back. The
+              combo can wait — what the player needs at that moment is to know
+              WHY the swimmer is sinking down the field. */}
+          {(mine?.m ?? 0) >= 2 ? (
+            <span className="shrink-0 text-xs font-bold tabular-nums text-amber-300 [text-shadow:0_1px_4px_rgba(0,0,0,0.9)]">
+              {t.swimSlowing}
+            </span>
+          ) : (
+            <span
+              className={[
+                'shrink-0 text-xs tabular-nums',
+                arenaOk ? 'text-white/70 [text-shadow:0_1px_4px_rgba(0,0,0,0.9)]' : 'text-neutral-400',
+              ].join(' ')}
+            >
+              {t.swimCombo(mine?.c ?? 0)}
+            </span>
+          )}
         </div>
 
         {/* Colour-matched to the cues above them, so which side is a glance

@@ -22,6 +22,8 @@
 // zone you pressed in IS the score, which is what makes a gauge a fair way to
 // show it.
 
+import { botJitter, botSlips } from '../bots.js';
+
 export const ATTEMPTS = 3;
 export const RUNWAY_M = 38; // the white line sits at this mark
 export const RUNOUT_M = 3; // sand past it; run this far and the attempt is gone
@@ -34,14 +36,19 @@ export const JUMP_ANGLE_DEG = 45;
 // The timing gauge, in metres before the line. The button wakes at GAUGE_M and
 // the green band is the last stride into the line.
 //
-// GREEN IS SIZED IN MILLISECONDS, not metres. At the 10.5 m/s ceiling a band
-// this wide is about 105ms of running, which is roughly one server tick plus a
-// phone's worth of latency — the smallest window a player can actually aim at
-// over a network. Half a metre looked tidier and was unhittable: it was under
-// one tick, so whether you got green came down to which frame your press
-// happened to land in.
+// GREEN IS SIZED IN MILLISECONDS, not metres. At the 10.5 m/s ceiling this band
+// is about 145ms of running, and at a club run-up nearer 165ms: a server tick,
+// a phone's worth of latency, and enough left over that the press a player MEANT
+// to make is the press that gets scored. Half a metre looked tidier and was
+// unhittable — under one tick, so green came down to which frame the press
+// happened to land in. 1.1m was hittable, but it still asked for a reaction
+// inside a tenth of a second, which reads as a coin toss to anyone who is not
+// already good at this.
+//
+// Widening it does not make the event safer, only fairer. The board has not
+// moved, so being late costs the same foul it always did.
 export const GAUGE_M = 4.5;
-export const PERFECT_M = 1.1;
+export const PERFECT_M = 1.5;
 // A gauge needs somewhere to show red, so the line is not a wall: cross it and
 // you have RUNOUT_M to press (and fail) or run into the sand (and fail).
 export const GOOD_FACTOR = 0.75; // orange takes three quarters of your speed
@@ -54,6 +61,14 @@ export const ARC_FRACTION = 0.62; // of FLIGHT_MS spent in the air
 
 /** How an attempt ended. Also the wire value, and the colour of the gauge. */
 export const KIND = { PERFECT: 0, GOOD: 1, FOUL: 2 };
+
+// What the bot skill dial is worth at the weak end: how far a stride wanders,
+// how often the same thumb goes down twice, and how often a bot leaves the
+// take-off too late and runs through the board. All three scale to nothing at
+// difficulty 1. See `shared/bots.js`.
+const BOT_WOBBLE_MS = 26;
+const BOT_STUMBLE_CHANCE = 0.08;
+const BOT_FOUL_CHANCE = 0.3;
 
 // A run-up tap closer than this is a key repeating, not a stride.
 export const MIN_STEP_INTERVAL_MS = 45;
@@ -301,20 +316,39 @@ export default {
   botInput(state, botId, difficulty = 0.7, now = 0) {
     const a = state.athletes[botId];
     if (!a || a.stage !== 'run' || now < state.startsAt) return null;
+    const shaky = clamp(1 - difficulty, 0, 1);
+    const attempt = a.jumps.length; // this bot's luck is per ATTEMPT, not per tick
 
-    // A strong bot waits for green; a weak one stabs at the button early and
-    // collects the orange jump, which is exactly how a weak human plays it.
-    //
-    // Aimed at three quarters of the way into green rather than at its middle,
-    // because a bot only gets to look once a tick: at 20 Hz and 10.5 m/s it
-    // covers half a metre between looks, and an aim point any deeper than this
-    // is one it can step straight over and out the far side into a foul.
-    const press = PERFECT_M * 0.75 + (1 - difficulty) * (GAUGE_M - PERFECT_M);
-    if (RUNWAY_M - a.x <= press) return { t: 'jump' };
+    // Every so often it leaves the take-off too late and runs through the
+    // board. Three attempts each and no bot ever fouled, which is the tell
+    // that they were not really playing the event — the board is the whole
+    // risk in it, and only the humans were carrying any.
+    const blown = botSlips(botId, attempt, BOT_FOUL_CHANCE * shaky ** 1.2, 1);
 
-    const gap = 150 - difficulty * 50;
+    if (!blown) {
+      // Where it means to take off. A strong bot waits for green; a weak one
+      // stabs early and collects the orange jump, which is exactly how a weak
+      // human plays it — and its aim wanders by attempt, so the same bot does
+      // not put three identical jumps in the book.
+      //
+      // Aimed three quarters of the way into green rather than at its middle,
+      // because a bot only gets to look once a tick: at 20 Hz and 10.5 m/s it
+      // covers half a metre between looks, and an aim point any deeper is one
+      // it can step straight over and out the far side into a foul.
+      const press = clamp(
+        PERFECT_M * 0.75 + (GAUGE_M - PERFECT_M) * shaky ** 1.5
+          + botJitter(botId, attempt, PERFECT_M * shaky, 2),
+        0.25,
+        GAUGE_M - 0.1,
+      );
+      if (RUNWAY_M - a.x <= press) return { t: 'jump' };
+    }
+
+    const gap = 150 - difficulty * 50 + botJitter(botId, a.steps, BOT_WOBBLE_MS * shaky, 3);
     if (a.lastStepAt && now - a.lastStepAt < gap) return null;
-    return { f: a.foot === 1 ? 0 : 1 };
+
+    const stumble = botSlips(botId, a.steps, BOT_STUMBLE_CHANCE * shaky ** 1.2, 4);
+    return { f: stumble ? a.foot : (a.foot === 1 ? 0 : 1) };
   },
 };
 

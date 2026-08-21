@@ -28,6 +28,8 @@
 // only what the drift and the wind take, so nobody is ever left with nothing on
 // the scoreboard. This is a party game, not a shooting sim.
 
+import { botJitter } from '../bots.js';
+
 export const ARROWS_PER_ATHLETE = 3;
 export const COUNTDOWN_MS = 2_500;
 export const MAX_ROUND_MS = 42_000;
@@ -49,6 +51,10 @@ export const SWAY_REACH = 0.22;
 
 // Two arrows closer together than this are a double-fire, not two decisions.
 const MIN_SHOT_INTERVAL_MS = 250;
+
+// How wide a hopeless bot sprays its arrows, in aim units — scaling to nothing
+// at difficulty 1. See `shared/bots.js`.
+const BOT_SPREAD = 0.5;
 
 const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
 const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : 0);
@@ -226,7 +232,20 @@ export default {
 
     const wind = state.winds[a.shots.length] ?? { x: 0, y: 0 };
     const ideal = aimThatCancels(wind, swayAt(state.sway, now));
-    const slop = (1 - difficulty) * 0.3;
-    return { x: clamp(ideal.x + slop, -1, 1), y: clamp(ideal.y - slop, -1, 1) };
+
+    // How far off the gold this bot pulls THIS arrow. It used to be a constant
+    // offset in one fixed diagonal, which is not a mistake so much as a
+    // sight that is screwed on crooked: every arrow landed in the same spot,
+    // so a bot's three shots were one shot scored three times and the whole
+    // event came down to whether the human could match a machine's grouping.
+    // Now the error has a direction of its own per arrow, and only its SIZE is
+    // read off the skill dial.
+    const shaky = clamp(1 - difficulty, 0, 1);
+    const spread = BOT_SPREAD * shaky ** 0.7;
+    const shot = a.shots.length;
+    return {
+      x: clamp(ideal.x + botJitter(botId, shot, spread, 1), -1, 1),
+      y: clamp(ideal.y + botJitter(botId, shot, spread, 2), -1, 1),
+    };
   },
 };
