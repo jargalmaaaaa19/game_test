@@ -66,7 +66,7 @@ const mn = {
   speed: 'Хурд',
   swimL: 'ЗҮҮН',
   swimR: 'БАРУУН',
-  swimHint: 'Эхний сумны талыг дар — хүлээх шаардлагагүй, буруу дарвал хурд буурна',
+  swimHint: 'Эхний сумны талыг дар — хурдан дарах тусам хурдан сэлнэ, өнгөрвөл хурд буурна',
   swimDistance: (x, total) => `${x} / ${total}м`,
   swimCombo: (n) => `${n} дараалан`,
   // Two mistakes in a row and the water is taking real speed back; the lane
@@ -74,8 +74,8 @@ const mn = {
   // player can read off a 3D pool.
   swimSlowing: 'УДААШИРЛАА',
   swimJudge: {
-    perfect: 'ТӨГС!', good: 'САЙН', ok: 'ХЭТ ХУРДАН',
-    wrong: 'БУРУУ ТАЛ',
+    perfect: 'ТӨГС!', good: 'САЙН', ok: 'ЯДАЖ АМЖЛАА',
+    miss: 'ӨНГӨРӨӨЛӨӨ', wrong: 'БУРУУ ТАЛ',
   },
   eventOf: (i, total) => `${i}/${total} төрөл`,
   results: 'Дүн',
@@ -197,13 +197,13 @@ const en = {
   speed: 'Speed',
   swimL: 'LEFT',
   swimR: 'RIGHT',
-  swimHint: 'Answer the arrow on the line — no waiting; a wrong side costs speed',
+  swimHint: 'Answer the leading arrow — the faster you press the faster you swim',
   swimDistance: (x, total) => `${x} / ${total}m`,
   swimCombo: (n) => `${n} in a row`,
   swimSlowing: 'SLOWING',
   swimJudge: {
-    perfect: 'PERFECT!', good: 'GOOD', ok: 'RUSHED',
-    wrong: 'WRONG SIDE',
+    perfect: 'PERFECT!', good: 'GOOD', ok: 'JUST IN TIME',
+    miss: 'GOT AWAY', wrong: 'WRONG SIDE',
   },
   eventOf: (i, total) => `event ${i}/${total}`,
   results: 'Results',

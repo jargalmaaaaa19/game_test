@@ -5,7 +5,7 @@
 //   node tools/swim.e2e.mjs
 
 import { io } from 'socket.io-client';
-import { STROKE_CYCLE_MS, sideOf } from '../shared/events/freestyle_swim.js';
+import { sideOf } from '../shared/events/freestyle_swim.js';
 
 const URL = process.env.SMOKE_URL || 'http://localhost:3200';
 
@@ -36,15 +36,15 @@ const waitFor = (s, event, ms = 90_000) =>
   });
 
 /**
- * Plays like the real client: strokes on its own cadence, answering whichever
- * arrow is at the head of the row.
+ * Plays like the real client: presses at its own rate, answering whichever
+ * arrow is leading.
  *
- * `every` is the whole skill of the event now. There is no window to hit, so
- * nothing here waits for anything: it counts its own strokes off the beat the
- * server last confirmed, exactly as the screen does — the row is a queue, and a
- * queue can be read ahead of.
+ * `every` is the whole skill of the event now — a rate is a speed. Nothing here
+ * waits for anything: it counts its own presses off the beat the server last
+ * confirmed, exactly as the screen does, and adopts the server's count whenever
+ * the stream has taken an arrow off it.
  */
-function autoSwimmer(socket, playerId, { every = STROKE_CYCLE_MS, wrongEvery = 0 }, play, clock) {
+function autoSwimmer(socket, playerId, { every = 250, wrongEvery = 0 }, play, clock) {
   let strokes = 0;
   let beat = 0;
   let done = false;
@@ -96,8 +96,8 @@ const run = async () => {
   const offset = play.t - Date.now();
   const clock = () => Date.now() + offset;
 
-  autoSwimmer(host, room.playerId, { every: STROKE_CYCLE_MS }, play, clock);
-  autoSwimmer(guest, j1.playerId, { every: 620 }, play, clock); // correct, but half the cadence
+  autoSwimmer(host, room.playerId, { every: 240 }, play, clock);
+  autoSwimmer(guest, j1.playerId, { every: 620 }, play, clock); // correct, but half the rate
   // `idle` never strokes.
 
   let last = null;
@@ -111,11 +111,12 @@ const run = async () => {
 
   check('the on-beat swimmer finished', state.ace?.d === 1, state.ace);
   check('the idle swimmer never finished', state.idle?.d === 0, state.idle);
-  // The row waits for the player, so an idle swimmer never spends an arrow at
-  // all: they coast off the wall against quadratic drag and stop. A third of
-  // the pool is the honest bound; five metres was a guess.
-  check('an idle swimmer glides, spends no arrows, and never finishes',
-    state.idle?.b === 0 && state.idle?.x < 50 / 3,
+  // The stream runs on regardless, so an idle swimmer is charged for every
+  // arrow that crosses the line while they coast off the wall against
+  // quadratic drag. A third of the pool is the honest bound; five metres was a
+  // guess.
+  check('an idle swimmer glides, is charged for the stream, and never finishes',
+    state.idle?.b > 0 && state.idle?.x < 50 / 3,
     { beat: state.idle?.b, x: state.idle?.x });
   check(
     'on-beat beat late',

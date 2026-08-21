@@ -4,12 +4,12 @@
 import assert from 'node:assert/strict';
 import swim, {
   COUNTDOWN_MS,
+  DRIFT_MS,
   MAX_RACE_MS,
   PATTERN_LEN,
-  STROKE_CYCLE_MS,
+  driftAt,
   gradeFor,
   sideOf,
-  strokeValue,
 } from '../shared/events/freestyle_swim.js';
 import { pointsForPlacement } from '../shared/scoring.js';
 
@@ -46,13 +46,13 @@ const seeded = (seed) => () => {
 };
 
 /**
- * Swim the race at a fixed cadence.
+ * Swim the race at a fixed press rate.
  *
- * `every` is the gap between strokes in ms — the only dial a player really has
- * now, since the arrows wait for them rather than the other way round.
+ * `every` is the gap between presses in ms, and it is the whole event: the
+ * arrows come on whether they are answered or not, so a rate is a speed.
  */
 function race(state, id, {
-  every = STROKE_CYCLE_MS, wrongEvery = 0, silent = false, from = 0, until = MAX_RACE_MS,
+  every = 250, wrongEvery = 0, silent = false, from = 0, until = MAX_RACE_MS,
 } = {}) {
   const a = state.athletes[id];
   const end = state.startsAt + until;
@@ -85,63 +85,66 @@ test('the pattern is mixed, not taking turns, and it wraps', () => {
   assert.equal(sideOf(sides, PATTERN_LEN + 5), sideOf(sides, 5));
 });
 
-test('an arrow can be answered at any moment — there is nothing to wait for', () => {
-  // The whole point of the rebuild. Two swimmers, the same stroke, taken a
-  // tenth of a second apart: both spend the arrow they were looking at, and
-  // neither is told it was early.
-  for (const delay of [1, 40, 500, 3_000]) {
+test('the leading arrow can be answered at any moment on its way in', () => {
+  // The whole point of the rebuild: wherever the arrow has got to, the press
+  // destroys it. Nothing is ever refused for being early, and the answer is
+  // worth the same at both ends of its run.
+  for (const delay of [1, 40, 400, 880]) {
     const state = fresh();
     const a = state.athletes.ace;
     const at = state.startsAt + delay;
     swim.step(state, 0.005, at);
-    swim.applyInput(state, 'ace', { s: sideOf(state.sides, 0) }, at);
-    assert.equal(a.beat, 1, `a stroke ${delay}ms in was refused`);
+    const before = { beat: a.beat, v: a.v };
+    swim.applyInput(state, 'ace', { s: sideOf(state.sides, a.beat) }, at);
+    assert.equal(a.beat, before.beat + 1, `a press ${delay}ms in was refused`);
     assert.equal(a.hits.wrong, 0);
-    assert.ok(a.v > 1.4, `the stroke was worth nothing: ${a.v}`);
+    assert.ok(a.v > before.v, `the press ${delay}ms in was worth nothing: ${a.v}`);
   }
 });
 
-test('a stroke is worth what the arm had time to load', () => {
-  assert.equal(strokeValue(STROKE_CYCLE_MS), 1, 'a full cycle is not full value');
-  assert.equal(strokeValue(STROKE_CYCLE_MS * 3), 1, 'a slow stroke is docked for being slow');
-  assert.equal(strokeValue(STROKE_CYCLE_MS / 2), 0.5);
-  assert.equal(strokeValue(0), 0);
-  assert.equal(gradeFor(1), 'perfect');
-  assert.equal(gradeFor(0.6), 'good');
-  assert.equal(gradeFor(0.2), 'ok'); // in the water, but rushed
-});
-
-test('the first stroke off the wall is a full one', () => {
-  // There is no previous stroke to have rushed, and charging for one would
-  // make the start a lottery.
+test('the stream runs whether it is answered or not', () => {
+  // The lane never waits. An arrow left alone crosses the line on its own
+  // clock, costs speed, and the next one comes on — and the buttons stay live
+  // through all of it.
   const state = fresh();
   const a = state.athletes.ace;
-  swim.applyInput(state, 'ace', { s: sideOf(state.sides, 0) }, state.startsAt + 1);
-  assert.equal(a.last, 'perfect');
+  const due = a.dueAt;
+
+  for (let at = state.startsAt; at < due + 10; at += 5) swim.step(state, 0.005, at);
+  assert.equal(a.beat, 1, 'the arrow that reached the line was never charged');
+  assert.equal(a.hits.miss, 1);
+  assert.equal(a.combo, 0);
+  assert.equal(a.dueAt, due + DRIFT_MS, 'the stream did not bring the next one on');
+  assert.ok(a.v < 1.4, 'letting one through was free');
+
+  // Still answerable, immediately, with no acknowledgement of the miss needed.
+  swim.applyInput(state, 'ace', { s: sideOf(state.sides, a.beat) }, due + 20);
+  assert.equal(a.beat, 2);
+  assert.equal(a.hits.wrong, 0);
 });
 
-test('stroking faster than the arm cycle buys nothing at all', () => {
-  // The rate ceiling, and the only one there is. Every cadence at or below the
-  // cycle delivers the same impulse per second, so a script at forty strokes a
-  // second finishes level with a player holding the rhythm — and the wrong
-  // sides it cannot avoid do the rest.
-  const times = [25, 60, 130, STROKE_CYCLE_MS].map((every) => race(fresh(), 'ace', { every }).time);
-  for (const time of times) assert.ok(time, 'a cadence never finished');
-  const spread = Math.max(...times) - Math.min(...times);
-  assert.ok(spread < 700, `hammering paid: ${times}`);
+test('an answered arrow is graded on how much run it had left', () => {
+  assert.equal(driftAt(1_000, 1_000 - DRIFT_MS), 0, 'just come on is not 0');
+  assert.equal(driftAt(1_000, 1_000), 1, 'at the line is not 1');
+  assert.equal(driftAt(1_000, 1_000 - DRIFT_MS / 2), 0.5);
+  assert.equal(gradeFor(0.1), 'perfect'); // cut down early
+  assert.equal(gradeFor(0.5), 'good');
+  assert.equal(gradeFor(0.95), 'ok'); // answered, but only just
 });
 
-test('stroking slower than the cycle is slower, in proportion', () => {
-  const ideal = race(fresh(), 'ace', { every: STROKE_CYCLE_MS });
-  const relaxed = race(fresh(), 'ace', { every: 450 });
-  const laboured = race(fresh(), 'ace', { every: 900 });
-  assert.ok(ideal.time < relaxed.time, `${ideal.time} vs ${relaxed.time}`);
-  assert.ok(relaxed.time < laboured.time, `${relaxed.time} vs ${laboured.time}`);
+test('pressing faster is swimming faster', () => {
+  // The whole shape of the event: a press is worth the same whenever it lands,
+  // so rate IS speed. This is the assertion the arm-cycle model failed.
+  const times = [160, 200, 250, 330, 500].map((every) => race(fresh(), 'ace', { every }).time);
+  for (let i = 1; i < times.length; i += 1) {
+    assert.ok(times[i] > times[i - 1], `a slower rate was not slower: ${times}`);
+  }
+  assert.ok(times[times.length - 1] - times[0] > 8_000, `rate barely mattered: ${times}`);
 });
 
 test('both a sharp and a laboured swimmer get home inside the round', () => {
-  const sharp = race(fresh(), 'ace', { every: STROKE_CYCLE_MS });
-  const laboured = race(fresh(), 'ace', { every: 900 });
+  const sharp = race(fresh(), 'ace', { every: 200 });
+  const laboured = race(fresh(), 'ace', { every: 700 });
   assert.ok(sharp.time > 12_000 && sharp.time < 26_000, `sharp: ${sharp.time}`);
   assert.ok(laboured.done && laboured.time < MAX_RACE_MS, `laboured: ${laboured.time}`);
 });
@@ -208,12 +211,12 @@ test('a stall is recovered by stroking, not waited out', () => {
 });
 
 test('hammering both buttons is punished at every cadence', () => {
-  // With no window to hold them off, this is the defence: the sides are random,
-  // so half of a blind hand's strokes catch the water backwards, and a wrong
-  // side costs more than a right one earns.
+  // With nothing holding a press off, this is the ONLY defence: the sides are
+  // random, so half of a blind hand's presses catch the water backwards, and a
+  // wrong side multiplies speed away faster than a right one adds it back.
   const read = race(fresh(seeded(7)), 'ace', { until: 12_000 });
 
-  for (const every of [25, 60, 130, STROKE_CYCLE_MS]) {
+  for (const every of [25, 60, 130, 250]) {
     const masher = fresh(seeded(7));
     const a = masher.athletes.ace;
     let side = 0;
@@ -231,13 +234,45 @@ test('hammering both buttons is punished at every cadence', () => {
   }
 });
 
-test('a swimmer who never strokes glides to a halt', () => {
+test('a swimmer who never presses glides to a halt while the stream runs on', () => {
   const state = fresh();
   const a = state.athletes.ace;
   race(state, 'ace', { silent: true });
   assert.ok(!a.done, 'an idle swimmer finished the race');
   assert.ok(a.v < 0.5, `still moving at ${a.v}`);
-  assert.equal(a.beat, 0, 'an untouched row moved on its own');
+  assert.ok(a.hits.miss > 30, `the stream stopped for them: ${a.hits.miss} missed`);
+  assert.ok(a.beat > 30, 'the row waited to be answered');
+});
+
+test('a press aimed at another arrow is dropped, not scored', () => {
+  // The repair for a lost input. Without it the two counts drift apart for
+  // good and every press after that answers the wrong arrow — which reads to
+  // the player as the lane calling every side wrong for no reason.
+  const state = fresh();
+  const a = state.athletes.ace;
+  const at = state.startsAt + 1;
+  const before = a.v;
+
+  swim.applyInput(state, 'ace', { s: sideOf(state.sides, 0), b: 3 }, at);
+  assert.equal(a.beat, 0, 'a press for an arrow we have not reached moved the row');
+  assert.equal(a.v, before, 'it was scored anyway');
+  assert.equal(a.hits.wrong, 0, 'it was charged as a fumble');
+
+  swim.applyInput(state, 'ace', { s: sideOf(state.sides, 0), b: 0 }, at);
+  assert.equal(a.beat, 1, 'a press for the arrow in front was refused');
+  assert.ok(a.v > before);
+
+  // A press for the arrow just spent — the echo of a stale row — is dropped
+  // the same way rather than charged against its successor.
+  const v = a.v;
+  swim.applyInput(state, 'ace', { s: sideOf(state.sides, 0), b: 0 }, at + 1);
+  assert.equal(a.beat, 1);
+  assert.equal(a.v, v);
+
+  // And a press with no arrow named at all still works, for the bots and for
+  // anything else that only knows a side.
+  swim.applyInput(state, 'ace', { s: sideOf(state.sides, 1) }, at + 2);
+  assert.equal(a.beat, 2);
 });
 
 test('a stroke before the gun is ignored', () => {
@@ -276,10 +311,12 @@ test('the wire snapshot is compact and quantized', () => {
   assert.deepEqual(Object.keys(wire).sort(), ['a', 'e', 's', 'sides']);
   assert.deepEqual(
     Object.keys(wire.a.ace).sort(),
-    ['b', 'c', 'd', 'j', 'ja', 'l', 'm', 't', 'v', 'x'],
+    ['b', 'c', 'd', 'da', 'j', 'ja', 'l', 'm', 't', 'v', 'x'],
   );
   assert.equal(Math.round(wire.a.ace.x * 100) / 100, wire.a.ace.x, 'x not quantized');
   assert.ok(wire.a.ace.b > 0, 'the row pointer is not on the wire');
+  // Without the deadline the client cannot draw a stream at all — only steps.
+  assert.ok(wire.a.ace.da > state.startsAt, 'the leading arrow has no deadline on the wire');
 });
 
 test('a strong bot swims cleanly, and a weak one swims slower', () => {
