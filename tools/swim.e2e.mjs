@@ -111,12 +111,11 @@ const run = async () => {
 
   check('the on-beat swimmer finished', state.ace?.d === 1, state.ace);
   check('the idle swimmer never finished', state.idle?.d === 0, state.idle);
-  // The stream runs on regardless, so an idle swimmer is charged for every
-  // arrow that crosses the line while they coast off the wall against
-  // quadratic drag. A third of the pool is the honest bound; five metres was a
-  // guess.
-  check('an idle swimmer glides, is charged for the stream, and never finishes',
-    state.idle?.b > 0 && state.idle?.x < 50 / 3,
+  // The line is a wall: the first arrow reaches it, stops there, and the
+  // swimmer is held. They never spend an arrow at all, and they get no further
+  // than the push off the wall carries them against quadratic drag.
+  check('an idle swimmer is stopped at the first arrow and never finishes',
+    state.idle?.b === 0 && state.idle?.x < 5,
     { beat: state.idle?.b, x: state.idle?.x });
   check(
     'on-beat beat late',

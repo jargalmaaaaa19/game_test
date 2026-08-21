@@ -52,11 +52,6 @@ const HIT_AT = 16;
 // a stream; with it the whole thing flows and the presses are felt as surges.
 const CLOSE_MS = 90;
 
-// How long a ghost of a missed arrow keeps sliding past the line before it
-// fades. An arrow that simply blinked out at the line was the one event in the
-// lane a player could not see happen.
-const GHOST_MS = 320;
-
 // The two guards on the local row running ahead of the server's.
 //
 // A press moves the row here immediately and reaches the server a trip later,
@@ -90,21 +85,6 @@ const RANK_INTERVAL_MS = 150;
 const MEDAL_TONE = ['#ffd23f', '#dbe4ee', '#e8834a'];
 
 /**
- * Bring the local row up to date with the stream, exactly as the sim does.
- *
- * The arrows cross the line on their own clock, so the row cannot wait for a
- * packet to move — at 20 Hz it would step rather than flow, and a miss would
- * land on screen a tick after it was charged.
- */
-function drainLocal(pred, now, sides) {
-  while (now >= pred.dueAt) {
-    pred.lost = { side: sideOf(sides, pred.beat), at: pred.dueAt };
-    pred.beat += 1;
-    pred.dueAt += DRIFT_MS;
-  }
-}
-
-/**
  * 50m Backstroke.
  *
  * A stream of arrows crossing a line. Answer the leading one — press, and it is
@@ -129,7 +109,8 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
   const cueRefs = useRef([]);
   const laneRef = useRef(null);
   const lineRef = useRef(null);
-  const ghostRef = useRef(null);
+  const markRef = useRef(null);
+  const stallRef = useRef(null);
   const judgeRef = useRef(null);
   const clockRef = useRef(null);
   const placeRef = useRef(null);
@@ -220,7 +201,6 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
         sendInput({ s: side, b: a.b });
         return;
       }
-      drainLocal(pred, sNow, latest.sides);
       // The arrow this press is aimed at goes with it, so a press that gets
       // lost cannot leave the two counts quietly answering different arrows.
       sendInput({ s: side, b: pred.beat });
@@ -393,7 +373,7 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
       let pred = predRef.current;
       if (!pred) {
         pred = predRef.current = {
-          beat: a.b, dueAt: a.da, close: 0, lost: null, serverBeat: a.b, serverMovedAt: sNow,
+          beat: a.b, dueAt: a.da, close: 0, serverBeat: a.b, serverMovedAt: sNow,
         };
       }
       // When the server's count last changed — the clock the stall guard runs
@@ -415,14 +395,14 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
         // not jog the whole stream sideways every tick.
         pred.dueAt += (a.da - pred.dueAt) * 0.2;
       }
-      drainLocal(pred, sNow, latest.sides);
-
-      // Where the stream has got to, in slots. The leading arrow is one slot out
-      // when it comes on and 0 when it crosses the line, and everything behind
-      // it is that plus its place in the queue — so the whole lane is one number
-      // and a multiply. `close` is the gap left by arrows destroyed early,
-      // shrinking to nothing over CLOSE_MS.
+      // Where the stream has got to, in slots. The leading arrow is one slot
+      // out when it comes on and 0 when it reaches the line — where it STOPS,
+      // because `driftAt` saturates there — and everything behind it is that
+      // plus its place in the queue, so the whole lane is one number and a
+      // multiply. `close` is the gap left by arrows destroyed early, shrinking
+      // to nothing over CLOSE_MS.
       const drift = driftAt(pred.dueAt, sNow);
+      const stalled = sNow >= pred.dueAt;
       pred.close *= Math.exp(-(dt * 1000) / CLOSE_MS);
       if (pred.close < 0.002) pred.close = 0;
       const lead = 1 - drift + pred.close;
@@ -442,40 +422,48 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
           continue;
         }
         const side = sideOf(latest.sides, pred.beat + k);
-        node.style.opacity = '1';
+        // The queue fades back from the front. The arrow being answered is the
+        // only one a player has to read, and depth is a cheaper way to say so
+        // than another badge would be.
+        node.style.opacity = k === 0 ? '1' : Math.max(0.34, 0.92 - k * 0.13).toFixed(2);
         node.style.left = `${x.toFixed(1)}px`;
         node.dataset.cue = side === 0 ? 'left' : 'right';
-        // The leading arrow is ALWAYS the live one — it can be answered at any
-        // point on its way in, so it is marked the whole way rather than only
-        // once it reaches somewhere.
+        // THE indicator: which arrow this press will answer. It is always the
+        // front one — nothing has to arrive first — so it is marked the whole
+        // way in rather than only once it reaches somewhere.
         node.dataset.live = k === 0 ? '1' : '0';
+        // ...and once it is standing on the line with the swimmer stopped
+        // behind it, it breathes until it is dealt with.
+        node.dataset.waiting = k === 0 && stalled ? '1' : '0';
         node.textContent = side === 0 ? ARROW.left : ARROW.right;
       }
 
-      // The one that got away, still going. It costs a node and it is the only
-      // way a player sees the difference between an arrow they destroyed and
-      // one that beat them to the line.
-      if (ghostRef.current) {
-        const age = pred.lost ? sNow - pred.lost.at : Infinity;
-        if (age >= 0 && age < GHOST_MS) {
-          const p = age / GHOST_MS;
-          ghostRef.current.style.opacity = (0.75 * (1 - p)).toFixed(2);
-          ghostRef.current.style.left = `${(lineX - p * gap * 0.8).toFixed(1)}px`;
-          ghostRef.current.dataset.cue = pred.lost.side === 0 ? 'left' : 'right';
-          ghostRef.current.textContent = pred.lost.side === 0 ? ARROW.left : ARROW.right;
-        } else {
-          ghostRef.current.style.opacity = '0';
-        }
+      // The pointer under the leading arrow, riding along with it. A ring on a
+      // tile is easy to lose in a moving row; something aimed at it from
+      // outside the row is not.
+      if (markRef.current) {
+        const x = lineX + lead * gap;
+        markRef.current.style.transform = `translate3d(${x.toFixed(1)}px, 0, 0) translateX(-50%)`;
+        markRef.current.dataset.waiting = stalled ? '1' : '0';
       }
 
-      // The line answers every stroke. The row moving is the real feedback, but
-      // at four strokes a second a player needs the hit to register somewhere
-      // they are already looking, without reading anything.
+      // The line answers every press. The row moving is the real feedback, but
+      // at four presses a second a player needs the hit to register somewhere
+      // they are already looking, without reading anything — and when an arrow
+      // is standing on it, the line itself goes amber to say what stopped.
       if (lineRef.current) {
         const pulse = Math.max(0, 1 - (sNow - flashRef.current) / 220);
         lineRef.current.style.transform = `translateX(-50%) scaleX(${(1 + pulse * 2.4).toFixed(2)})`;
-        lineRef.current.style.opacity = (0.5 + 0.5 * pulse).toFixed(2);
+        // Nearly solid at rest. It used to sit at half opacity between presses,
+        // from when it was a marker that lit up on a hit — as a WALL that reads
+        // as something you can barely see holding an arrow back.
+        lineRef.current.style.opacity = (0.88 + 0.12 * pulse).toFixed(2);
+        lineRef.current.dataset.waiting = stalled ? '1' : '0';
       }
+
+      // The swimmer is stopped, and the lane says so where the player is
+      // already looking rather than only in the standings.
+      if (stallRef.current) stallRef.current.dataset.on = stalled ? '1' : '0';
 
       // The judgement flash fades on its own so it does not linger.
       if (judgeRef.current) {
@@ -551,72 +539,107 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
       )}
 
       <div className={arenaOk ? 'relative px-4 pb-7' : 'pb-2'}>
-        {/* The cue lane. One job: which side is coming, and when.
+        {/* The lane. One job: which arrow is next, and how much room is left
+            before it reaches the line and everything stops.
             The judgement flashes INSIDE it, over the line, because that is
             where the player is already looking — as its own item in a row it
             was a third thing competing for a strip only wide enough for two. */}
         <div
           ref={laneRef}
           className={[
-            'relative h-24 overflow-hidden rounded-2xl border',
-            arenaOk ? 'border-white/15 bg-black/55' : 'mt-5 border-neutral-800 bg-neutral-900/70',
+            'relative h-24 overflow-hidden rounded-[20px] border shadow-[inset_0_1px_0_rgba(255,255,255,0.08)]',
+            arenaOk
+              ? 'border-white/15 bg-gradient-to-b from-slate-900/80 via-black/70 to-slate-900/80'
+              : 'mt-5 border-neutral-800 bg-neutral-900/70',
           ].join(' ')}
         >
-          {/* Everything left of the line is water already swum: answered arrows
-              leave that way, and shading it keeps the eye on the queue rather
-              than on the empty lane behind it. */}
+          {/* Water already swum. Answered arrows leave this way, and shading it
+              keeps the eye on the queue rather than on the empty lane behind. */}
           <div
-            className="absolute inset-y-0 left-0 bg-gradient-to-r from-black/55 to-transparent"
-            style={{ width: `${HIT_AT}%` }}
+            className="absolute inset-y-0 left-0 bg-gradient-to-r from-black/70 via-black/40 to-transparent"
+            style={{ width: `${HIT_AT + 4}%` }}
           />
-          {/* THE LINE. Not a gate any more — a marker: the head of the queue
-              rests on it, and it says "this one, now". Nothing has to reach it,
-              so it can be exactly where the answered arrow leaves from. */}
+
+          {/* THE LINE — a wall now, not a gate. An arrow that reaches it stops
+              there and the swimmer stops with it, so the line is drawn as
+              something solid enough to stop a thing: a bright bar with a lip at
+              each end, going amber the moment something is standing against
+              it. */}
           <div
             ref={lineRef}
-            className="absolute inset-y-1.5 w-[3px] rounded-full bg-white
-                       shadow-[0_0_14px_rgba(255,255,255,0.75)] will-change-transform"
+            data-waiting="0"
+            className="absolute inset-y-0 w-[4px] will-change-transform
+                       bg-gradient-to-b from-white/70 via-white to-white/70
+                       shadow-[0_0_16px_rgba(255,255,255,0.85)]
+                       data-[waiting=1]:from-amber-200/70 data-[waiting=1]:via-amber-300
+                       data-[waiting=1]:to-amber-200/70
+                       data-[waiting=1]:shadow-[0_0_22px_rgba(252,211,77,0.95)]"
             style={{ left: `${HIT_AT}%`, transform: 'translateX(-50%)' }}
           />
-          {/* The arrow that reached the line unanswered, on its way out. */}
-          <div
-            ref={ghostRef}
-            style={{ opacity: 0, left: '100%' }}
-            className="absolute top-1/2 grid h-11 w-11 -translate-x-1/2 -translate-y-1/2 place-items-center
-                       rounded-xl text-lg font-bold leading-none will-change-[left]
-                       data-[cue=left]:bg-yellow-400/60 data-[cue=left]:text-neutral-950
-                       data-[cue=right]:bg-blue-400/60 data-[cue=right]:text-neutral-950"
-          />
+
           {/* The arrows. Plain nodes the render loop writes `left` on sixty
               times a second — they are animation, and a keyed React list that
               re-rendered the lane on every frame would cost more than the pool
-              it sits under. NO css transition: the position is already the
-              truth every frame, and easing it would put the tile somewhere the
-              sim disagrees with. */}
+              it sits under. NO css transition on the position: it is already
+              the truth every frame, and easing it would put the tile somewhere
+              the sim disagrees with. The RING and the scale do transition,
+              because those say "this is the one" rather than "this is where". */}
           {Array.from({ length: CUES_DRAWN }, (_, k) => (
             <div
               key={k}
               ref={(node) => { cueRefs.current[k] = node; }}
               data-live="0"
+              data-waiting="0"
               style={{ opacity: 0, left: '100%' }}
               className="absolute top-1/2 grid h-11 w-11 -translate-x-1/2 -translate-y-1/2 place-items-center
-                         rounded-xl text-lg font-bold leading-none will-change-[left]
-                         data-[cue=left]:bg-yellow-400 data-[cue=left]:text-neutral-950
-                         data-[cue=right]:bg-blue-400 data-[cue=right]:text-neutral-950
-                         data-[live=1]:scale-110 data-[live=1]:ring-2 data-[live=1]:ring-white"
+                         rounded-2xl text-2xl font-black leading-none will-change-[left]
+                         shadow-[0_2px_8px_rgba(0,0,0,0.45)] ring-0 ring-white/0
+                         transition-[box-shadow,ring-width,ring-color] duration-150
+                         data-[cue=left]:bg-gradient-to-b data-[cue=left]:from-amber-300 data-[cue=left]:to-yellow-500
+                         data-[cue=left]:text-amber-950
+                         data-[cue=right]:bg-gradient-to-b data-[cue=right]:from-sky-300 data-[cue=right]:to-blue-500
+                         data-[cue=right]:text-sky-950
+                         data-[live=1]:scale-[1.06] data-[live=1]:ring-[3px] data-[live=1]:ring-white
+                         data-[live=1]:shadow-[0_0_18px_rgba(255,255,255,0.45),0_3px_10px_rgba(0,0,0,0.5)]
+                         data-[waiting=1]:animate-waiting data-[waiting=1]:ring-amber-300"
             />
           ))}
+
+          {/* The pointer that rides under whichever arrow the next press
+              answers. The ring on the tile says it too, but a ring inside a
+              moving row of coloured tiles is easy to lose; an arrowhead coming
+              at it from the floor of the lane is not. */}
+          <div
+            ref={markRef}
+            data-waiting="0"
+            className="pointer-events-none absolute bottom-0 left-0 h-0 w-0 will-change-transform
+                       border-x-[7px] border-b-[9px] border-x-transparent border-b-white
+                       data-[waiting=1]:border-b-amber-300"
+          />
+
           <p
             ref={judgeRef}
             data-grade="none"
             className="pointer-events-none absolute inset-x-0 top-1.5 text-center text-xs font-bold
                        [text-shadow:0_1px_3px_rgba(0,0,0,0.9)]
-                       data-[grade=miss]:text-amber-300
                        data-[grade=perfect]:text-emerald-300
                        data-[grade=good]:text-sky-300
                        data-[grade=ok]:text-neutral-300
                        data-[grade=wrong]:text-red-400"
           />
+
+          {/* Why the swimmer stopped, said where the player is already looking.
+              The 3D pool can show a swimmer coming to a halt but never WHY, and
+              a rule this blunt has to name itself the first time it bites. */}
+          <p
+            ref={stallRef}
+            data-on="0"
+            className="pointer-events-none absolute right-2 top-1.5 rounded-full bg-amber-300 px-2 py-0.5
+                       text-[10px] font-black uppercase tracking-wider text-amber-950
+                       opacity-0 transition-opacity duration-150 data-[on=1]:opacity-100"
+          >
+            {t.swimStopped}
+          </p>
         </div>
 
         {/* One status line, two items, each pinned to its own edge. Three
@@ -699,8 +722,10 @@ function StrokeButton({ side, label, glass }) {
   // Same hues as the cue tiles above them, so a button and the arrows it
   // answers are read as one thing.
   const tint = side === 0
-    ? 'border-yellow-300/70 bg-yellow-400/20 text-yellow-100 active:bg-yellow-400/45'
-    : 'border-blue-300/70 bg-blue-400/20 text-blue-100 active:bg-blue-400/45';
+    ? `border-amber-200/80 bg-gradient-to-b from-amber-400/70 to-amber-600/70 text-amber-50
+       shadow-[0_6px_18px_rgba(245,158,11,0.35)] active:from-amber-300/90 active:to-amber-500/90`
+    : `border-sky-200/80 bg-gradient-to-b from-sky-400/70 to-blue-600/70 text-sky-50
+       shadow-[0_6px_18px_rgba(56,189,248,0.35)] active:from-sky-300/90 active:to-blue-500/90`;
   return (
     <button
       type="button"

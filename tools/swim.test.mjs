@@ -9,6 +9,7 @@ import swim, {
   PATTERN_LEN,
   driftAt,
   gradeFor,
+  isStalled,
   sideOf,
 } from '../shared/events/freestyle_swim.js';
 import { pointsForPlacement } from '../shared/scoring.js';
@@ -102,24 +103,29 @@ test('the leading arrow can be answered at any moment on its way in', () => {
   }
 });
 
-test('the stream runs whether it is answered or not', () => {
-  // The lane never waits. An arrow left alone crosses the line on its own
-  // clock, costs speed, and the next one comes on — and the buttons stay live
-  // through all of it.
+test('an arrow that reaches the line stops there, and stops the swimmer', () => {
+  // The wall. The arrow does not pass, is not charged for, and does not bring
+  // the next one on: it stands there and the swimmer is held until it is
+  // answered.
   const state = fresh();
   const a = state.athletes.ace;
   const due = a.dueAt;
 
-  for (let at = state.startsAt; at < due + 10; at += 5) swim.step(state, 0.005, at);
-  assert.equal(a.beat, 1, 'the arrow that reached the line was never charged');
-  assert.equal(a.hits.miss, 1);
-  assert.equal(a.combo, 0);
-  assert.equal(a.dueAt, due + DRIFT_MS, 'the stream did not bring the next one on');
-  assert.ok(a.v < 1.4, 'letting one through was free');
+  for (let at = state.startsAt; at < due + 900; at += 5) swim.step(state, 0.005, at);
+  assert.equal(a.beat, 0, 'the arrow was taken off the player instead of waiting');
+  assert.equal(a.dueAt, due, 'the queue moved on without being answered');
+  assert.ok(isStalled(a, due + 900));
+  assert.ok(a.v < 0.05, `the swimmer did not stop: ${a.v}`);
 
-  // Still answerable, immediately, with no acknowledgement of the miss needed.
-  swim.applyInput(state, 'ace', { s: sideOf(state.sides, a.beat) }, due + 20);
-  assert.equal(a.beat, 2);
+  const heldAt = a.x;
+  for (let at = due + 900; at < due + 2_000; at += 5) swim.step(state, 0.005, at);
+  assert.ok(a.x - heldAt < 0.05, `still creeping down the pool: ${a.x - heldAt}m`);
+
+  // And answering it starts everything again, at once.
+  swim.applyInput(state, 'ace', { s: sideOf(state.sides, a.beat) }, due + 2_000);
+  assert.equal(a.beat, 1);
+  assert.ok(a.v > 0.4, 'answering did not get the swimmer moving');
+  assert.equal(a.dueAt, due + 2_000 + DRIFT_MS, 'the next arrow did not get a clear run');
   assert.equal(a.hits.wrong, 0);
 });
 
@@ -129,7 +135,7 @@ test('an answered arrow is graded on how much run it had left', () => {
   assert.equal(driftAt(1_000, 1_000 - DRIFT_MS / 2), 0.5);
   assert.equal(gradeFor(0.1), 'perfect'); // cut down early
   assert.equal(gradeFor(0.5), 'good');
-  assert.equal(gradeFor(0.95), 'ok'); // answered, but only just
+  assert.equal(gradeFor(0.95), 'ok'); // answered off the line itself
 });
 
 test('pressing faster is swimming faster', () => {
@@ -234,14 +240,14 @@ test('hammering both buttons is punished at every cadence', () => {
   }
 });
 
-test('a swimmer who never presses glides to a halt while the stream runs on', () => {
+test('a swimmer who never presses is stopped at the first arrow', () => {
   const state = fresh();
   const a = state.athletes.ace;
   race(state, 'ace', { silent: true });
   assert.ok(!a.done, 'an idle swimmer finished the race');
-  assert.ok(a.v < 0.5, `still moving at ${a.v}`);
-  assert.ok(a.hits.miss > 30, `the stream stopped for them: ${a.hits.miss} missed`);
-  assert.ok(a.beat > 30, 'the row waited to be answered');
+  assert.equal(a.v, 0, `still moving at ${a.v}`);
+  assert.equal(a.beat, 0, 'the queue emptied itself');
+  assert.ok(a.x < 2.5, `the push off the wall carried them ${a.x}m`);
 });
 
 test('a press aimed at another arrow is dropped, not scored', () => {
