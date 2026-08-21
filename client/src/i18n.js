@@ -11,9 +11,8 @@ const mn = {
   inviteFriends: 'Найзаа урих',
   inviting: 'Урьж байна…',
   inviteHint: 'Найзаа урьвал тэр шууд өрөөнд орно',
-  inviteHintWeb: 'Аппаас гадуур урих боломжгүй — кодоо хуваалцаарай',
+  inviteHintWeb: 'Найзаа урих нь зөвхөн Усион апп дотор ажиллана',
   joiningInvite: 'Урилгаар өрөөнд орж байна…',
-  startingSolo: 'Тэмцээн эхэлж байна…',
   // The name a player who never opened the picker races under. Without it the
   // server calls them Athlete 1 — the same series it gives the bots — and they
   // cannot find themselves on any scoreboard.
@@ -119,7 +118,7 @@ const mn = {
   },
 
   errors: {
-    ROOM_NOT_FOUND: 'Ийм кодтой өрөө олдсонгүй',
+    ROOM_NOT_FOUND: 'Тэр өрөө олдсонгүй',
     ROOM_FULL: 'Өрөө дүүрсэн байна',
     ROOM_LOCKED: 'Тэмцээн аль хэдийн эхэлсэн байна',
     ALREADY_IN_ROOM: 'Та аль хэдийн өрөөнд байна',
@@ -145,9 +144,8 @@ const en = {
   inviteFriends: 'Invite friends',
   inviting: 'Inviting…',
   inviteHint: 'They join the room straight from the invite',
-  inviteHintWeb: 'Invites need the Usion app — share the code instead',
+  inviteHintWeb: 'Inviting a friend only works inside the Usion app',
   joiningInvite: 'Joining the room you were invited to…',
-  startingSolo: 'Starting your race…',
   youAthlete: 'You',
   cancel: 'Cancel',
   copied: 'Copied',
@@ -233,7 +231,7 @@ const en = {
   labels: {},
 
   errors: {
-    ROOM_NOT_FOUND: 'No room with that code',
+    ROOM_NOT_FOUND: 'That room is no longer there',
     ROOM_FULL: 'That room is full',
     ROOM_LOCKED: 'That match has already started',
     ALREADY_IN_ROOM: 'You are already in a room',

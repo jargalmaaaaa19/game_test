@@ -4,7 +4,7 @@ import { DEFAULT_CHARACTER, DEFAULT_SKIN } from '@shared/avatars.js';
 import { DEFAULT_COUNTRY } from '@shared/countries.js';
 import { t, errorText } from './i18n.js';
 import { SERVER_URL, useRoomSocket } from './net/useRoomSocket.js';
-import { invitedRoomId, launchedSolo, onInvitedToRoom } from './net/usion.js';
+import { invitedRoomId, onInvitedToRoom } from './net/usion.js';
 import HomePage from './components/HomePage.jsx';
 import LobbyPage from './components/LobbyPage.jsx';
 import SprintScreen from './components/SprintScreen.jsx';
@@ -33,18 +33,11 @@ const DEFAULT_LOOK = {
   country: DEFAULT_COUNTRY,
 };
 
-// How hard the solo door tries before giving up and showing the home screen.
-// Three attempts across a second and a half covers a rate limit or a socket
-// that reconnected mid-call; past that it is not a hiccup and the player is
-// better served by a button than by a spinner.
-const SOLO_ATTEMPTS = 3;
-const SOLO_RETRY_MS = 700;
-
 /**
  * The look is remembered on the device so a returning player never has to build
- * their athlete twice — which is also what makes a zero-tap solo launch
- * possible later. In the Usion host this belongs in `Usion.storage` (durable,
- * survives reinstall); localStorage is the standalone fallback.
+ * their athlete twice: the picker opens on the athlete they raced as last time.
+ * In the Usion host this belongs in `Usion.storage` (durable, survives
+ * reinstall); localStorage is the standalone fallback.
  */
 function loadLook(hostConfig) {
   let stored = null;
@@ -128,13 +121,13 @@ export default function App({ hostConfig }) {
   /**
    * The same look, for a room with nobody in it to be confused by the name.
    *
-   * A player who has never opened the picker has no name of their own, and the
+   * A player who opens the picker and sets no name still has none, and the
    * server names an unnamed seat `Athlete N` — the SAME series it gives the
-   * bots. A zero-tap launch therefore seated the human as "Athlete 1" between
-   * "Athlete 2" and "Athlete 3", and there was then nothing in the results, the
-   * medal table or the ceremony to say which row was theirs.
+   * bots. A solo launch would otherwise seat the human as "Athlete 1" between
+   * "Athlete 2" and "Athlete 3", with nothing in the results, the medal table
+   * or the ceremony to say which row was theirs.
    *
-   * Only the solo doors get this. In a room with other people, a seat labelled
+   * Only the solo door gets this. In a room with other people, a seat labelled
    * "You" is a seat labelled wrong on every screen but one.
    */
   const soloSeat = () => {
@@ -142,121 +135,110 @@ export default function App({ hostConfig }) {
     return seat.name ? seat : { ...seat, name: t.youAthlete };
   };
 
-  // Read through refs by the invite and solo doors: both fire from effects
-  // whose dependency lists must not re-arm on every keystroke in the name
-  // field, and both need the look as it stands the moment they run. The invite
-  // takes the plain seat — it is walking into a room full of other people.
+  // Read through a ref by the invite door, which fires from an effect whose
+  // dependency list must not re-arm on every keystroke in the name field, and
+  // which needs the look as it stands the moment it runs. It takes the plain
+  // seat — it is walking into a room full of other people.
   const seatLookRef = useRef(seatLook);
   seatLookRef.current = seatLook;
-  const soloSeatRef = useRef(soloSeat);
-  soloSeatRef.current = soloSeat;
 
   const handleCreate = () => guard(() => createRoom(seatLook()));
+
   const handleSolo = () => guard(() => soloMatch(soloSeat()));
 
   // --- arriving from an invite ---------------------------------------------
-  // The invited player never sees a code. The platform hands us the room, and
-  // the only correct thing to do with it is walk straight in: a player who
-  // tapped "join" in a chat has already answered every question the home
-  // screen would ask them.
+  // Nobody is ever told a code. The platform owns the friend picker and the
+  // delivery; all this game ever sees is a room id, handed over in one of two
+  // ways, and its only job is to be in that room when the friend arrives.
   //
-  // Two doors, because an invite can be accepted before the game is open (the
-  // roomId is in the launch params) or while it is already sitting on the home
-  // screen (GAME_ROOM_ASSIGNED arrives live). Missing the second one strands
-  // the most common case of all: the host invites a friend who is already in
-  // the game.
+  //   AT LAUNCH   the invitee tapped "join" in a chat, so `getLaunchParams()`
+  //               carries the roomId before the game has drawn anything.
+  //   MID-SESSION `onRoomAssigned` fires — the host tapped invite (ours, or
+  //               the app's own Share button) and the platform has put this
+  //               session into a room.
+  //
+  // The second one is registered ONCE and for the whole session, never gated on
+  // the launch mode or on whether a game is already running. That is the part
+  // this game had wrong: the handler was torn down the moment a room existed,
+  // so a player who was already racing bots when their friend was invited never
+  // heard about it, and the two of them sat in separate rooms wondering where
+  // the other one was. A solo round is exactly the session most likely to be
+  // promoted into a real one.
   const [invitePending, setInvitePending] = useState(() => Boolean(invitedRoomId()));
+  const [inviteTick, setInviteTick] = useState(0);
   const joinedRef = useRef(null);
-  const inviteFailedRef = useRef(false);
+  const pendingRoomRef = useRef(invitedRoomId());
+  const roomRef = useRef(room);
+  roomRef.current = room;
 
-  const acceptInvite = useCallback(
+  const takeRoom = useCallback(
     (roomId) => {
       if (!roomId || joinedRef.current === roomId) return;
       joinedRef.current = roomId; // once per room, or a re-render re-joins
       setInvitePending(true);
-      guard(() => joinRoom({ code: roomId, ...seatLookRef.current() }))
-        .then((res) => {
-          // The room is gone, full, or already racing. A player who followed an
-          // invite to a party that has ended should still get a game rather
-          // than an error screen — the solo door below takes over.
-          if (!res?.ok) inviteFailedRef.current = true;
-        })
-        .finally(() => setInvitePending(false));
+      guard(async () => {
+        // Promoted out of a round against bots: the platform has put somebody
+        // real on the way, so the bots come out and we walk into the room they
+        // were invited to. Same move the reference implementation makes.
+        if (roomRef.current) await leaveRoom();
+        return joinRoom({ code: roomId, ...seatLookRef.current() });
+      }).finally(() => {
+        // Whether it worked or not, stop holding the screen. A room that is
+        // gone, full or already racing drops the player on the home screen
+        // with the error on it, which is where they can pick an athlete and
+        // start a game of their own.
+        setInvitePending(false);
+      });
     },
     // `look.name` is read at call time on purpose: adding it here would re-arm
     // the effect every keystroke in the name field.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [guard, joinRoom],
+    [guard, joinRoom, leaveRoom],
   );
 
-  useEffect(() => {
-    // Wait for the socket: joining before the connection is up just fails.
-    if (connection !== 'connected' || room) return undefined;
-    const launched = invitedRoomId();
-    if (launched) acceptInvite(launched);
-    return onInvitedToRoom(acceptInvite);
-  }, [connection, room, acceptInvite]);
+  /**
+   * Teach this server the room the platform actually sent the invitees to.
+   *
+   * Also claims the id, so the `onRoomAssigned` that follows our own invite is
+   * read as "you are in the room you just made" rather than as an invitation
+   * out of it.
+   */
+  const handleLink = useCallback((roomId) => {
+    joinedRef.current = roomId;
+    return linkRoom(roomId);
+  }, [linkRoom]);
 
-  // The solo door. A launch that is not an invite starts a round against bots
-  // the moment the socket is up — no menu, no Play button, nothing to tap. The
-  // invite door above runs first and claims the session when there is a room to
-  // join, so the two can never both fire.
+  // The registration. Once, on mount, for as long as the game is open.
+  useEffect(() => onInvitedToRoom((roomId) => {
+    pendingRoomRef.current = roomId;
+    setInviteTick((n) => n + 1);
+  }), []);
+
+  // And the one place that acts on a room id, once the socket can carry a join.
+  useEffect(() => {
+    if (connection !== 'connected') return;
+    const roomId = pendingRoomRef.current;
+    if (!roomId) return;
+    pendingRoomRef.current = null;
+    // Already in a room with real people in it: this is the id of the room we
+    // are standing in, not an invitation out of it. Walking out of a live game
+    // on the strength of an echo is the one failure worse than missing one.
+    if (roomRef.current && !roomRef.current.players?.some((p) => p.isBot)) return;
+    takeRoom(roomId);
+  }, [connection, inviteTick, takeRoom]);
+
+  // There is no solo DOOR any more, only a button.
   //
-  // It RETRIES, and it holds the screen while it does. The door used to be a
-  // one-shot: it armed itself before the call and never disarmed, so a launch
-  // that failed for any passing reason — a rate limit, a reconnect landing
-  // mid-call, a server hiccup — dropped the player onto the home screen and
-  // asked them to build an athlete. That is the one thing this door exists to
-  // spare them, and a transient failure is no reason to make them do it.
-  const soloRef = useRef(false);
-  const soloTries = useRef(0);
-  const [soloRetry, setSoloRetry] = useState(0);
-  const [soloStarting, setSoloStarting] = useState(
-    () => launchedSolo(hostConfig) && !invitedRoomId(),
-  );
-
-  // Seated: the door is done with the screen. Without this the flag outlives
-  // the launch it belonged to, and a player who LEAVES a room later — the door
-  // long since spent — would be handed the starting screen for a race nothing
-  // is going to start, with no way back to the home page.
-  useEffect(() => {
-    if (room) setSoloStarting(false);
-  }, [room]);
-
-  useEffect(() => {
-    if (connection !== 'connected' || room || soloRef.current) return undefined;
-    // An invite owns the session unless it turned out to lead nowhere.
-    if (invitedRoomId() && !inviteFailedRef.current) return undefined;
-    if (!launchedSolo(hostConfig) && !inviteFailedRef.current) return undefined;
-
-    soloRef.current = true;
-    soloTries.current += 1;
-    setSoloStarting(true);
-
-    let dead = false;
-    let timer = null;
-    guard(() => soloMatch(soloSeatRef.current())).then((res) => {
-      if (dead || res?.ok) return;
-      // Out of tries: fall back to the home screen, which at least gives them
-      // a Play button rather than a spinner that never resolves.
-      if (soloTries.current >= SOLO_ATTEMPTS) {
-        setSoloStarting(false);
-        return;
-      }
-      timer = setTimeout(() => {
-        soloRef.current = false;
-        setSoloRetry((n) => n + 1);
-      }, SOLO_RETRY_MS);
-    });
-
-    return () => {
-      dead = true;
-      if (timer) clearTimeout(timer);
-    };
-    // `look.name` is read at call time, as with the invite: adding it here
-    // would re-arm the effect on every keystroke in the name field.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [connection, room, guard, soloMatch, hostConfig, soloRetry]);
+  // The game used to open straight into a round against bots — no menu, no
+  // Play button, nothing to tap — on the grounds that a game opening on a
+  // lobby is dead content in a swipe feed. The cost of that was everything the
+  // home screen is for: the athlete you build, the flag you pick, and the
+  // choice between racing bots and racing a friend. All of it existed and none
+  // of it was reachable, because the race started before you could see it.
+  //
+  // So the launch lands here instead, and the first tap starts the race. An
+  // INVITE still walks straight in — a player who tapped "join" in a chat has
+  // already answered every question this screen would ask them.
 
   if (connection !== 'connected' && !room) {
     return (
@@ -289,21 +271,6 @@ export default function App({ hostConfig }) {
       <div className="grid min-h-full place-items-center px-6 text-center">
         <div className="max-w-xs">
           <p className="text-sm text-neutral-300">{t.joiningInvite}</p>
-          <p className="mt-2 text-xs text-neutral-600">{t.appName}</p>
-        </div>
-      </div>
-    );
-  }
-
-  // And the same for the solo door, for the same reason: this launch has
-  // already answered every question the home screen would ask, so it should
-  // never flash the athlete picker on the way to the start line — not while
-  // the first call is in flight, and not while a failed one is being retried.
-  if (!room && soloStarting) {
-    return (
-      <div className="grid min-h-full place-items-center px-6 text-center">
-        <div className="max-w-xs">
-          <p className="text-sm text-neutral-300">{t.startingSolo}</p>
           <p className="mt-2 text-xs text-neutral-600">{t.appName}</p>
         </div>
       </div>
