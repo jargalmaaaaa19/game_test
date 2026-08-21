@@ -140,21 +140,15 @@ export default function App({ hostConfig }) {
   // the game.
   const [invitePending, setInvitePending] = useState(() => Boolean(invitedRoomId()));
   const joinedRef = useRef(null);
-  const inviteFailedRef = useRef(false);
 
   const acceptInvite = useCallback(
     (roomId) => {
       if (!roomId || joinedRef.current === roomId) return;
       joinedRef.current = roomId; // once per room, or a re-render re-joins
       setInvitePending(true);
-      guard(() => joinRoom({ code: roomId, ...seatLookRef.current() }))
-        .then((res) => {
-          // The room is gone, full, or already racing. A player who followed an
-          // invite to a party that has ended should still get a game rather
-          // than an error screen — the solo door below takes over.
-          if (!res?.ok) inviteFailedRef.current = true;
-        })
-        .finally(() => setInvitePending(false));
+      guard(() => joinRoom({ code: roomId, ...seatLookRef.current() })).finally(() =>
+        setInvitePending(false),
+      );
     },
     // `look.name` is read at call time on purpose: adding it here would re-arm
     // the effect every keystroke in the name field.
@@ -177,9 +171,7 @@ export default function App({ hostConfig }) {
   const soloRef = useRef(false);
   useEffect(() => {
     if (connection !== 'connected' || room || soloRef.current) return;
-    // An invite owns the session unless it turned out to lead nowhere.
-    if (invitedRoomId() && !inviteFailedRef.current) return;
-    if (!launchedSolo(hostConfig) && !inviteFailedRef.current) return;
+    if (invitedRoomId() || !launchedSolo(hostConfig)) return;
     soloRef.current = true;
     guard(() => soloMatch(seatLookRef.current()));
     // `look.name` is read at call time, as with the invite: adding it here
