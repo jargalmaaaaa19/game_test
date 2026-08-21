@@ -38,6 +38,9 @@ export class Room {
     this.tickHandle = null;
     this.phaseTimer = null;
 
+    /** Platform room ids this room also answers to — see `RoomStore`. */
+    this.externalIds = new Set();
+
     this.createdAt = now;
     this.lastActivityAt = now;
     this.emptySince = null;

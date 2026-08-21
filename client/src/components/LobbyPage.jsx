@@ -12,6 +12,7 @@ export default function LobbyPage({
   onLookChange,
   onReady,
   onStart,
+  onLink,
   onLeave,
   error,
   busy,
@@ -45,7 +46,11 @@ export default function LobbyPage({
   const invite = async () => {
     setInviting(true);
     try {
-      await inviteToRoom(room.code, room.maxPlayers);
+      const { success, roomId } = await inviteToRoom(room.code, room.maxPlayers);
+      // The picker answers with the room the invitees are actually being sent
+      // to. Register it before they arrive, or they reach a server that has
+      // never heard of it and end up in games of their own.
+      if (success && roomId) await onLink?.(roomId);
     } finally {
       setInviting(false);
     }

@@ -184,11 +184,19 @@ export function registerHandlers(io, store) {
         return respond(cb, fail(ERROR.ALREADY_IN_ROOM, 'leave your current room first'));
       }
 
-      const code = normalizeRoomCode(payload.code);
-      if (!code) return respond(cb, fail(ERROR.INVALID_INPUT, 'that is not a room code'));
-
-      const room = store.getByCode(code);
-      if (!room) return respond(cb, fail(ERROR.ROOM_NOT_FOUND, 'no room with that code'));
+      // TWO kinds of id arrive here. A four character code is one of ours,
+      // typed or read aloud. Anything else is the PLATFORM's room id, which is
+      // what a chat invite actually carries — `game.invite` returns Usion's own
+      // roomId, and the invitee is handed that, not the string we passed in.
+      // Rejecting it was why an invited friend never landed in the same room.
+      const raw = typeof payload.code === 'string' ? payload.code.trim() : '';
+      const code = normalizeRoomCode(raw);
+      const room = code ? store.getByCode(code) : store.getByExternalId(raw);
+      if (!room) {
+        return respond(cb, code || raw
+          ? fail(ERROR.ROOM_NOT_FOUND, 'no room with that id')
+          : fail(ERROR.INVALID_INPUT, 'that is not a room id'));
+      }
 
       const now = Date.now();
 
@@ -222,6 +230,27 @@ export function registerHandlers(io, store) {
       log.info('room.joined', { roomId: room.id, code: room.code, playerId: player.id, host: false });
       respond(cb, { ok: true, code: room.code, roomId: room.id, playerId: player.id, state: room.snapshot() });
       broadcast(io, room);
+    });
+
+    /**
+     * Teach the server the platform's name for this room.
+     *
+     * The host calls this the moment `game.invite` resolves, because that is
+     * when Usion tells us which room the invitees are being sent to — and it is
+     * not necessarily the id we asked for. Without it the invitees arrive
+     * holding an id this server has never heard of, and land in rooms of their
+     * own: two people in the same chat, in separate games.
+     */
+    socket.on('room:link', (payload = {}, cb) => {
+      if (!limit.lobby()) return respond(cb, fail(ERROR.RATE_LIMITED, 'slow down'));
+      const room = currentRoom();
+      if (!room) return respond(cb, fail(ERROR.NOT_IN_ROOM, 'you are not in a room'));
+
+      const linked = store.linkExternalId(room, payload.usionRoomId);
+      if (!linked) {
+        return respond(cb, fail(ERROR.INVALID_INPUT, 'that room id cannot be linked'));
+      }
+      respond(cb, { ok: true, code: room.code, roomId: room.id });
     });
 
     socket.on('room:leave', (_payload, cb) => {

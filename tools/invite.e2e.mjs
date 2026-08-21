@@ -58,14 +58,46 @@ const run = async () => {
   check('and both are on the same roster', joined.state.players.length === 2,
     joined.state.players.map((p) => p.name));
 
-  console.log('\nthe ids that are NOT invitations');
-  const placeholder = await call(stranger, 'room:join', { code: 'standalone_a1b2c3d4' });
-  check('a standalone_* placeholder is refused, not silently joined',
-    placeholder.ok === false, placeholder);
-  check('and it is refused as INVALID_INPUT — the error a player saw on the home screen',
-    placeholder.error?.code === 'INVALID_INPUT', placeholder.error);
+  console.log('\nthe platform’s own room id');
+  // What actually happens in the app: `game.invite` answers with USION's room
+  // id, not the string we passed in, and THAT is what the invitee is handed.
+  // Fresh every run: an alias is permanent for the life of the room it names,
+  // so a hard-coded one is still linked to the PREVIOUS run's room on a server
+  // that has not been restarted, and the link is correctly refused.
+  const PLATFORM_ID = `usion_room_${Math.random().toString(36).slice(2, 14)}`;
+  const linked = await call(host, 'room:link', { usionRoomId: PLATFORM_ID });
+  check('the host can register the id the picker handed back', linked.ok === true, linked);
 
-  const missing = await call(stranger, 'room:join', { code: 'ZZZZ' });
+  const third = await connect('u_third');
+  const viaPlatform = await call(third, 'room:join', { code: PLATFORM_ID, name: 'Third' });
+  check('a friend arriving with THAT id lands in the same room',
+    viaPlatform.ok === true && viaPlatform.roomId === room.roomId,
+    { host: room.roomId, invitee: viaPlatform.roomId, error: viaPlatform.error });
+  check('and joins the roster rather than opening their own game',
+    viaPlatform.state?.players?.length === 3,
+    viaPlatform.state?.players?.map((p) => p.name));
+
+  // Re-linking from INSIDE the room is idempotent — the host may invite twice.
+  const again = await call(friend, 'room:link', { usionRoomId: PLATFORM_ID });
+  check('re-linking the same room with the same id is harmless', again.ok === true, again);
+
+  // From a different room it must be refused, or anyone holding a room id could
+  // redirect that room's invitees into a game of their own.
+  await call(stranger, 'room:create', { name: 'Stranger' });
+  const hijack = await call(stranger, 'room:link', { usionRoomId: PLATFORM_ID });
+  check('an id already pointing elsewhere cannot be re-pointed', hijack.ok === false, hijack);
+
+  console.log('\nthe ids that are NOT invitations');
+  const outsider = await connect('u_outsider');
+  const placeholder = await call(outsider, 'room:join', { code: 'standalone_a1b2c3d4' });
+  // The client filters `standalone_*` before it reaches the socket, but an id
+  // nobody has linked must still be a clean miss rather than a seat in
+  // somebody else's room.
+  check('an unlinked id is refused, not silently joined', placeholder.ok === false, placeholder);
+  check('and it reads as ROOM_NOT_FOUND', placeholder.error?.code === 'ROOM_NOT_FOUND',
+    placeholder.error);
+
+  const missing = await call(outsider, 'room:join', { code: 'ZZZZ' });
   check('a well-formed code for no room is ROOM_NOT_FOUND', missing.error?.code === 'ROOM_NOT_FOUND',
     missing.error);
 

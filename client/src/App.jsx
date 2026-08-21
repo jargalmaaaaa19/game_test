@@ -56,7 +56,7 @@ function loadLook(hostConfig) {
 export default function App({ hostConfig }) {
   const {
     connection, room, me, error, match, netRef,
-    createRoom, joinRoom, soloMatch, leaveRoom, updateIdentity, setReady, startGame, sendInput, clearError,
+    createRoom, joinRoom, soloMatch, linkRoom, leaveRoom, updateIdentity, setReady, startGame, sendInput, clearError,
     requestRematch,
   } = useRoomSocket();
 
@@ -283,6 +283,7 @@ export default function App({ hostConfig }) {
       onLookChange={setLook}
       onReady={(ready) => guard(() => setReady(ready))}
       onStart={() => guard(startGame)}
+      onLink={linkRoom}
       onLeave={() => guard(leaveRoom)}
       error={error}
       busy={busy}

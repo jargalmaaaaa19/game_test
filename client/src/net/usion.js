@@ -1,5 +1,3 @@
-import { ROOM_CODE_LENGTH } from '@shared/constants.js';
-
 // Thin wrapper over the Usion SDK.
 //
 // Two reasons this exists rather than sprinkling `window.Usion?.` through the
@@ -160,7 +158,11 @@ export function invitedRoomId() {
 function inviteRoom(roomId) {
   const id = typeof roomId === 'string' ? roomId.trim() : '';
   if (!id || /^standalone[_-]/i.test(id)) return null;
-  return id.replace(/[\s-]/g, '').length === ROOM_CODE_LENGTH ? id : null;
+  // Any other shape is allowed through. It used to have to look like one of our
+  // four character codes, which threw away the very id an invitee arrives with
+  // — Usion's own room id — and dropped them into a solo game while their
+  // friend waited in the room next door. The server resolves both now.
+  return id.length <= 128 ? id : null;
 }
 
 /**
@@ -210,15 +212,23 @@ export function onInvitedToRoom(handler) {
  *   caller can fall back to sharing the code instead of claiming it sent one.
  */
 export async function inviteToRoom(roomId, maxPlayers) {
-  if (!embedded || !roomId) return { success: false, invited: [] };
+  if (!embedded || !roomId) return { success: false, roomId: null, invited: [] };
   try {
     const res = await sdk().game.invite({
       roomId,
       ...(Number.isFinite(maxPlayers) && maxPlayers > 0 ? { maxPlayers } : {}),
     });
-    return { success: Boolean(res?.success), invited: res?.invited ?? [] };
+    // `roomId` COMES BACK, and it is the one that matters: the picker sends the
+    // invitees to Usion's room, not to the string we asked for, and a host who
+    // was playing solo is moved into a room the platform makes for them. The
+    // caller hands it to `room:link` so this server answers to it too.
+    return {
+      success: Boolean(res?.success),
+      roomId: typeof res?.roomId === 'string' ? res.roomId : null,
+      invited: res?.invited ?? [],
+    };
   } catch {
-    return { success: false, invited: [] };
+    return { success: false, roomId: null, invited: [] };
   }
 }
 

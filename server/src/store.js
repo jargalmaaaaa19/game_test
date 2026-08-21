@@ -21,6 +21,17 @@ export class RoomStore {
     this.byId = new Map();
     /** @type {Map<string, string>} code -> roomId */
     this.byCode = new Map();
+    /**
+     * @type {Map<string, string>} the PLATFORM's room id -> roomId
+     *
+     * Usion owns the room a chat invite leads to: `game.invite` returns its
+     * own `roomId`, invitees "join THIS room", and a host who was playing solo
+     * is moved into a room the platform creates for them. None of those ids is
+     * our four character code, so a room has to be findable by both — the code
+     * for anyone typing it, and the platform's id for everyone who arrived
+     * through an invitation.
+     */
+    this.byExternalId = new Map();
   }
 
   create({ maxPlayers, now }) {
@@ -41,12 +52,38 @@ export class RoomStore {
     return roomId ? this.byId.get(roomId) ?? null : null;
   }
 
+  /** A room by whatever id the platform is calling it. */
+  getByExternalId(externalId) {
+    const roomId = this.byExternalId.get(externalId);
+    return roomId ? this.byId.get(roomId) ?? null : null;
+  }
+
+  /**
+   * Teach the store that a room also answers to a platform room id.
+   *
+   * Idempotent, and it refuses to move an id that already points somewhere
+   * else: an alias that could be re-pointed would let anyone holding a room id
+   * redirect that room's invitees into a room of their own.
+   */
+  linkExternalId(room, externalId) {
+    const id = typeof externalId === 'string' ? externalId.trim() : '';
+    if (!id || id.length > 128) return false;
+    const existing = this.byExternalId.get(id);
+    if (existing && existing !== room.id) return false;
+    if (existing === room.id) return true;
+    this.byExternalId.set(id, room.id);
+    room.externalIds.add(id);
+    log.info('room.linked', { roomId: room.id, code: room.code, externalId: id });
+    return true;
+  }
+
   destroy(room, reason) {
     if (!this.byId.has(room.id)) return;
     if (room.tickHandle) clearInterval(room.tickHandle);
     if (room.phaseTimer) clearTimeout(room.phaseTimer);
     this.byId.delete(room.id);
     this.byCode.delete(room.code);
+    for (const externalId of room.externalIds) this.byExternalId.delete(externalId);
     log.info('room.destroyed', { roomId: room.id, code: room.code, reason });
   }
 

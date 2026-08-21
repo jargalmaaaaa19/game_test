@@ -165,6 +165,11 @@ export function useRoomSocket() {
       // lobby's whole job before answering.
       soloMatch: (payload) => enterRoom('room:solo', payload),
 
+      // Tell the server what Usion is calling this room, so an invitee holding
+      // the platform's id resolves to the same room rather than opening a new
+      // one. Not `enterRoom`: nothing about the local seat changes.
+      linkRoom: (usionRoomId) => call('room:link', { usionRoomId }),
+
       leaveRoom: async () => {
         await call('room:leave');
         localStorage.removeItem(SEAT_KEY);
