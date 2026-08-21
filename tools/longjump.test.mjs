@@ -4,6 +4,7 @@
 import assert from 'node:assert/strict';
 import longJump, {
   ATTEMPTS,
+  CLAIM_REACH_M,
   COUNTDOWN_MS,
   FLIGHT_MS,
   GAUGE_M,
@@ -324,6 +325,59 @@ function botRound(difficulty, id = 'ace') {
   }
   return a;
 }
+
+test('a take-off is judged where the player pressed, not where the packet found them', () => {
+  // The client runs the athlete in itself so the strides feel instant, which
+  // leaves its picture a one-way trip ahead of the server's. Judged here, a
+  // press made on green is scored from a mark still short of the gauge — and
+  // an 'early' press is ignored outright, so the athlete runs through the
+  // board and fouls. That is two of the three attempts gone on a slow link.
+  const state = fresh();
+  const a = state.athletes.ace;
+  a.v = 10.5;
+  // A quarter of a second of one-way latency at racing pace: two and a half
+  // metres of runway, and the green band is one and a half wide. This server
+  // has them in orange; the player is looking at green.
+  const pressedAt = RUNWAY_M - PERFECT_M / 2;
+  a.x = pressedAt - 2.5;
+  assert.equal(zoneAt(a.x), 'good', 'the lag under test does not cross a band');
+  assert.equal(zoneAt(pressedAt), 'perfect');
+
+  longJump.applyInput(state, 'ace', { t: 'jump', x: pressedAt }, live);
+  assert.equal(a.jumps.length, 1, 'the press was ignored as early');
+  assert.equal(a.jumps[0].kind, KIND.PERFECT, 'a green press was scored as something else');
+  assert.equal(a.flight.fromX, pressedAt, 'the arc did not start where they took off');
+  assert.equal(a.x, pressedAt, 'the athlete was left behind their own take-off');
+});
+
+test('a claimed take-off cannot rewind, or outrun the runway', () => {
+  // Forward, only as far as the athlete could plausibly have got since our last
+  // word — and never backwards, which would be a way to step out of a foul.
+  const beyond = (x, claim) => {
+    const state = fresh();
+    const a = state.athletes.ace;
+    a.v = 9;
+    a.x = x;
+    longJump.applyInput(state, 'ace', { t: 'jump', x: claim }, live);
+    return a;
+  };
+
+  const far = beyond(RUNWAY_M - GAUGE_M, RUNWAY_M + 50);
+  assert.ok(far.x <= RUNWAY_M - GAUGE_M + CLAIM_REACH_M + 1e-9, `claimed ${far.x}`);
+
+  // Past the board already: a claim that names a spot back up the runway is
+  // still a foul, because the claim can only ever move forwards.
+  const back = beyond(RUNWAY_M + 0.5, RUNWAY_M - PERFECT_M / 2);
+  assert.equal(back.jumps[0].kind, KIND.FOUL, 'a claim rewound out of a foul');
+
+  // And a press with no mark at all still works, for the bots and for anything
+  // else that only knows it pressed.
+  const plain = fresh();
+  plain.athletes.ace.v = 9;
+  plain.athletes.ace.x = RUNWAY_M - PERFECT_M / 2;
+  longJump.applyInput(plain, 'ace', { t: 'jump' }, live);
+  assert.equal(plain.athletes.ace.jumps[0].kind, KIND.PERFECT);
+});
 
 test('a flawless bot hits green every time', () => {
   const a = botRound(1);

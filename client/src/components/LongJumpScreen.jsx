@@ -22,6 +22,21 @@ import LongJumpLanes, { pctFor } from './LongJumpLanes.jsx';
 const RECONCILE_RATE = 3.5; // per second
 const SNAP_DISTANCE = 4; // metres
 
+// How long a predicted take-off is drawn before the server has echoed it.
+//
+// The jump used to be the one input this screen did NOT predict: the strides
+// moved the athlete here immediately, the jump waited for the round trip. So
+// the athlete kept running after the button went down, then the arc arrived
+// and started from wherever the server had been when the press landed — behind
+// the runner by a trip's worth of runway. It read exactly as reported: it did
+// not jump when pressed, and when it did jump it jumped backwards.
+//
+// Now the take-off is applied here first, against the same mark the press
+// carries, so the arc starts where the athlete is standing. If the echo never
+// comes — a dropped press, or a server that judged it early — the prediction is
+// given up after this long and the athlete goes back to running.
+const TAKEOFF_ECHO_MS = 500;
+
 // How much runway past the line the gauge shows. Red has to be a band you can
 // see yourself entering, not a state you are only told about afterwards.
 const RED_TAIL_M = 1.2;
@@ -82,6 +97,8 @@ export default function LongJumpScreen({ room, me, netRef, sendInput }) {
 
   const predRef = useRef(null);
   const predStageRef = useRef('run');
+  // A take-off drawn here, waiting for the server to say the same thing.
+  const takeoffRef = useRef(null);
   const rafRef = useRef(0);
   // What is on screen this frame, reused rather than rebuilt: this object is
   // touched sixty times a second.
@@ -193,8 +210,20 @@ export default function LongJumpScreen({ room, me, netRef, sendInput }) {
     };
 
     const jump = () => {
-      if (!liveAthlete()) return;
-      sendInput({ t: 'jump' });
+      const pred = predRef.current;
+      const local = pred?.athletes[myId];
+      if (!local || !liveAthlete()) return;
+
+      // WHERE the athlete is standing, to a centimetre, as the player sees
+      // them. It goes up with the press so the server judges the take-off at
+      // the mark they aimed at rather than at the one it has last heard about.
+      const at = Math.round(local.x * 100) / 100;
+      const now = serverNow(netRef.current);
+      longJump.applyInput(pred, myId, { t: 'jump', x: at }, now);
+      // Only hold a prediction the local sim actually took: a press before the
+      // gauge wakes is refused here exactly as it will be there.
+      if (local.stage === 'flight') takeoffRef.current = { at: now };
+      sendInput({ t: 'jump', x: at });
     };
 
     // Spacebar alternates on its own so a keyboard is playable at all; the side
@@ -294,7 +323,16 @@ export default function LongJumpScreen({ room, me, netRef, sendInput }) {
       const local = pred.athletes[myId];
       const server = latest.a?.[myId];
       if (local && server) {
-        if (server.st === 'run') {
+        const waiting = takeoffRef.current
+          && sNow - takeoffRef.current.at < TAKEOFF_ECHO_MS
+          && local.stage === 'flight';
+
+        if (waiting && server.st === 'run') {
+          // A take-off drawn here and not yet echoed. Hold it: stepping the run
+          // on would have the athlete sprinting down the runway while the jump
+          // they just made is in the air.
+        } else if (server.st === 'run') {
+          takeoffRef.current = null;
           // A fresh attempt puts the athlete 38 metres back down the runway.
           // Adopt that wholesale rather than easing across the infield.
           if (predStageRef.current !== 'run' || Math.abs(server.x - local.x) > SNAP_DISTANCE) {
@@ -318,6 +356,7 @@ export default function LongJumpScreen({ room, me, netRef, sendInput }) {
         } else {
           // In the air, or done: the server owns both, and there is nothing for
           // a prediction to add.
+          takeoffRef.current = null;
           local.x = server.x;
           local.v = server.v;
         }
@@ -331,10 +370,18 @@ export default function LongJumpScreen({ room, me, netRef, sendInput }) {
         const source = isMe ? latest.a?.[player.id] : authoritative?.a?.[player.id];
         if (!source) continue;
         const slot = drawn[player.id] ?? (drawn[player.id] = { x: 0, v: 0, st: 'run', f: null });
-        slot.x = isMe && source.st === 'run' ? local.x : source.x;
-        slot.v = source.v ?? 0;
-        slot.st = source.st;
-        slot.f = source.f ?? null;
+        // The take-off this device has drawn but the server has not echoed yet:
+        // its arc, in the same wire shape the snapshot uses, so everything
+        // downstream — the arena, the flat lane, the score — reads one thing.
+        const mine = isMe && takeoffRef.current && local.stage === 'flight' && source.st === 'run'
+          ? local
+          : null;
+        slot.x = isMe && !mine && source.st === 'run' ? local.x : source.x;
+        slot.v = mine ? mine.v : source.v ?? 0;
+        slot.st = mine ? 'flight' : source.st;
+        slot.f = mine
+          ? [mine.flightUntil, mine.flight.fromX, mine.flight.range, mine.flight.distance, mine.flight.kind]
+          : source.f ?? null;
       }
 
       const arena = arenaRef.current;

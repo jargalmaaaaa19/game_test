@@ -70,6 +70,28 @@ const BOT_WOBBLE_MS = 26;
 const BOT_STUMBLE_CHANCE = 0.08;
 const BOT_FOUL_CHANCE = 0.3;
 
+// How far ahead of this server's own idea of the athlete a take-off may be
+// claimed, in metres.
+//
+// The client runs the athlete in itself so the strides feel instant, which puts
+// its picture a one-way trip ahead of ours — a metre and a half at racing pace
+// on a slow phone, and the green band is only 1.5m wide. Judging the press
+// where WE think the athlete is therefore scores a jump the player never made:
+// they press on green, we call it orange, and if we are still short of the
+// gauge we ignore the press altogether and let them run through the board. Two
+// fouls out of three attempts, from the far side of a bad connection.
+//
+// So the press carries the mark it was made at, clamped to somewhere the
+// athlete could actually have got to since our last word. Never BEHIND us — a
+// claim that rewinds is a claim that steps back out of a foul — and never past
+// the end of the runout.
+//
+// It gives a cheat nothing worth having: the gauge is deterministic and drawn
+// from state the client already holds, so a modified client can hit green every
+// time by pressing at the right moment. The claim only lets an honest laggy one
+// be judged where it was standing.
+export const CLAIM_REACH_M = 3;
+
 // A run-up tap closer than this is a key repeating, not a stride.
 export const MIN_STEP_INTERVAL_MS = 45;
 const IDEAL_STEP_MS = 110;
@@ -252,8 +274,15 @@ export default {
       if (now - a.lastTapAt < 100) return;
       a.lastTapAt = now;
 
-      const zone = zoneAt(a.x);
+      // The mark the player pressed at, as they saw it — see CLAIM_REACH_M.
+      const claimed = Number.isFinite(input.x) ? input.x : a.x;
+      const at = clamp(claimed, a.x, Math.min(a.x + CLAIM_REACH_M, RUNWAY_M + RUNOUT_M));
+
+      const zone = zoneAt(at);
       if (zone === 'early') return; // the button is not live yet
+      // Take off from there, so the arc starts where the athlete was drawn
+      // rather than snapping back to where this server had got to.
+      a.x = at;
       resolveJump(a, KIND_OF[zone], now);
     }
   },
