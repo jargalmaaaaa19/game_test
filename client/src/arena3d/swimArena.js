@@ -459,7 +459,7 @@ export function createSwimArena(B, canvas, { players, lanes, myId }) {
    * tracking shot that rides over the pack, and a low angle at the finish wall
    * looking back at whoever is still coming in.
    */
-  const frameCamera = (dt, { lead, mine, spread, started, mineDone }) => {
+  const frameCamera = (dt, { lead, mine, mineFound, started, mineDone }) => {
     let rate = 3.2;
     let fov = 1.15;
 
@@ -481,14 +481,24 @@ export function createSwimArena(B, canvas, { players, lanes, myId }) {
       fov = 0.95;
       rate = 1.8;
     } else {
-      // A plan view over the pack, the way a pool is filmed.
+      // A plan view over the pack, the way a pool is filmed, held on the LOCAL
+      // swimmer.
+      //
+      // It used to ride a point between the leader and the local swimmer, to
+      // keep both in shot. A blend still drifts towards whoever is winning
+      // though, so a player who is behind spends the race watching the camera
+      // walk away from their own athlete — and at that point they are watching
+      // somebody else's race. The camera belongs to the player it is for.
+      // Rivals earn their place in frame by being NEAR them, which is the only
+      // time their exact position matters; the rest of the time the plate at
+      // the top of the screen says where everyone is.
       //
       // The distance is SOLVED rather than picked: the lanes have to fit
       // across the frame, and on a portrait phone that is the narrow axis, so
       // the height that needs is a function of the screen shape and of how
       // many lanes are in use. Guessing a number gives a shot that is right on
       // one handset and crops the outside lanes on the next.
-      const focus = lead * 0.55 + mine * 0.45;
+      const focus = mineFound ? mine : lead;
       const aspect = engine.getAspectRatio(camera) || 1;
       const halfAcross = Math.atan(Math.tan(camera.fov / 2) * aspect);
       const dist = clamp(laneHalfSpan / Math.max(0.12, Math.tan(halfAcross)), 12, 24);
@@ -514,8 +524,8 @@ export function createSwimArena(B, canvas, { players, lanes, myId }) {
       clock += dt;
 
       let lead = 0;
-      let trail = Infinity;
       let mine = 0;
+      let mineFound = false;
       let mineDone = false;
       let anyDone = false;
 
@@ -525,16 +535,17 @@ export function createSwimArena(B, canvas, { players, lanes, myId }) {
         poseSwimmer(B, swimmer, sample, dt, clock, frame.started);
         const drawn = swimmer.pivot.position.x;
         if (drawn > lead) lead = drawn;
-        if (drawn < trail) trail = drawn;
         if (sample.done) anyDone = true;
         if (swimmer.id === (frame.myId ?? myId)) {
           mine = drawn;
+          mineFound = true;
           mineDone = Boolean(sample.done);
         }
       }
-      if (!Number.isFinite(trail)) trail = lead;
 
-      frameCamera(dt, { lead, mine, spread: lead - trail, started: frame.started, mineDone });
+      // `lead` is only a fallback now — for a spectator, or the frame or two
+      // before the local swimmer's first sample arrives.
+      frameCamera(dt, { lead, mine, mineFound, started: frame.started, mineDone });
 
       // Confetti from the first touch, not the last: the winner is celebrated
       // while the field is still coming in, which is what a pool looks like.

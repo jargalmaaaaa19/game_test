@@ -296,13 +296,17 @@ export function createSprintArena(B, canvas, { players, lanes, myId }) {
    * Place the camera for this frame.
    *
    * Three shots, eased between rather than cut: the low angle behind the
-   * blocks everyone recognises, a tracking shot that rides alongside the pack,
-   * and a closer three-quarter view once the leader is home. The tracking shot
-   * follows a point BETWEEN the leader and the local player and pulls back as
-   * the field strings out — follow the leader alone and a player who is losing
-   * cannot see their own athlete, which is the one thing they care about.
+   * blocks everyone recognises, a tracking shot that rides alongside the local
+   * runner, and a closer three-quarter view once the leader is home.
+   *
+   * The tracking shot is locked to the LOCAL runner — the one thing a player
+   * cares about is their own athlete. It used to ride a point between them and
+   * the leader, which sounds fair and is not: the blend drifts towards whoever
+   * is winning, so the further behind a player falls the further the camera
+   * walks away from them. It still pulls back as the field strings out, which
+   * is how the rivals stay in shot.
    */
-  const frameCamera = (dt, { lead, mine, spread, started, leaderHome }) => {
+  const frameCamera = (dt, { lead, mine, mineFound, spread, started, leaderHome }) => {
     let rate = 4.5;
     let fov = 0.92;
 
@@ -320,7 +324,7 @@ export function createSprintArena(B, canvas, { players, lanes, myId }) {
       fov = 0.85;
       rate = 2.2;
     } else {
-      const focus = lead * 0.6 + mine * 0.4;
+      const focus = mineFound ? mine : lead;
       const back = 13 + Math.min(spread, 34) * 0.34;
       wantPos.set(focus + 2.4, 5 + Math.min(spread, 34) * 0.06, -back);
       wantTarget.set(focus + 1, 1.1, -0.5);
@@ -346,6 +350,7 @@ export function createSprintArena(B, canvas, { players, lanes, myId }) {
       let lead = 0;
       let trail = Infinity;
       let mine = 0;
+      let mineFound = false;
       let leaderHome = false;
 
       for (const runner of runners.values()) {
@@ -358,11 +363,16 @@ export function createSprintArena(B, canvas, { players, lanes, myId }) {
           leaderHome = Boolean(sample.done);
         }
         if (drawn < trail) trail = drawn;
-        if (runner.id === (frame.myId ?? myId)) mine = drawn;
+        if (runner.id === (frame.myId ?? myId)) {
+          mine = drawn;
+          mineFound = true;
+        }
       }
       if (!Number.isFinite(trail)) trail = lead;
 
-      frameCamera(dt, { lead, mine, spread: lead - trail, started: frame.started, leaderHome });
+      // `lead` is the fallback for a viewer with no runner of their own; the
+      // spread still sets how far back the shot sits, so the field stays in it.
+      frameCamera(dt, { lead, mine, mineFound, spread: lead - trail, started: frame.started, leaderHome });
 
       // The crowd. Each section rises and settles on its own phase, so the
       // stand ripples instead of heaving as one slab. Six sine waves a frame
