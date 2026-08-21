@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   DISTANCE_M,
   REACH_M,
+  STROKE_M,
   cueAt,
   sideOf,
 } from '@shared/events/freestyle_swim.js';
@@ -12,15 +13,22 @@ import { t, lang } from '../i18n.js';
 import Flag from './Flag.jsx';
 import SwimLanes from './SwimLanes.jsx';
 
-// How much water the lane shows ahead of the swimmer, in METRES. The arrows
-// are pinned to marks on the pool, so this is a window onto the water rather
-// than a span of time — which is exactly why the lane can only scroll as fast
-// as the swimmer does.
-const LOOKAHEAD_M = 5;
+// How far apart the arrows sit ON SCREEN, in pixels, and how wide a tile is.
+// The gap is what is held constant — not the stretch of water on screen — so
+// the ribbon looks the same on a phone and on a desktop.
+//
+// It used to be the other way round: a fixed FIVE METRES spread across whatever
+// width the lane happened to be. On a 390px phone that put the tiles 40px apart
+// and touching; on a 1200px monitor it put them 122px apart, which is the
+// "arrows are very far away" the lane was reported for. A wide screen should
+// show more of the water, not the same water stretched.
+const CUE_GAP_PX = 52;
+const CUE_TILE_PX = 44;
 
-// Enough tiles to fill that window, plus the ones still sliding out past the
-// hit line behind it.
-const CUES_DRAWN = Math.ceil(LOOKAHEAD_M / 0.62) + 3;
+// Enough tiles for the widest lane anyone will open this on. Any that fall
+// past the lookahead are simply hidden, so over-provisioning costs nine
+// invisible divs and nothing else.
+const CUES_DRAWN = 22;
 
 // Where the hit line sits across the lane, as a percentage of its width. An
 // arrow is struck as it crosses this; the shaded band around it is the window
@@ -57,6 +65,7 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
   const arenaRef = useRef(null);
   const laneRefs = useRef(new Map()); // flat fallback only
   const cueRefs = useRef([]);
+  const laneRef = useRef(null);
   const judgeRef = useRef(null);
   const clockRef = useRef(null);
   const placeRef = useRef(null);
@@ -282,18 +291,28 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
       // as fast as the swimmer advances — press well and it speeds up under
       // you, miss and it slows down. Nothing here is on a clock.
       const swum = drawn[myId]?.x ?? a.x ?? 0;
+
+      // How much water fits, given that the GAP is the thing being held fixed.
+      // Read every frame rather than cached: the lane is a flex child, and a
+      // rotation or a keyboard opening resizes it without remounting anything.
+      const laneW = laneRef.current?.clientWidth ?? 360;
+      const lookaheadM = Math.max(
+        STROKE_M * 2,
+        (STROKE_M * (100 - HIT_AT) * laneW) / (100 * CUE_GAP_PX),
+      );
+
       for (let k = 0; k < CUES_DRAWN; k += 1) {
         const node = cueRefs.current[k];
         if (!node) continue;
         const index = a.b + k;
         const ahead = cueAt(index) - swum;
-        if (ahead > LOOKAHEAD_M || ahead < -REACH_M * 3) {
+        if (ahead > lookaheadM || ahead < -REACH_M * 3) {
           node.style.opacity = '0';
           continue;
         }
         const side = sideOf(latest.sides, index);
         node.style.opacity = '1';
-        node.style.left = `${(HIT_AT + (ahead / LOOKAHEAD_M) * (100 - HIT_AT)).toFixed(2)}%`;
+        node.style.left = `${(HIT_AT + (ahead / lookaheadM) * (100 - HIT_AT)).toFixed(2)}%`;
         node.dataset.cue = side === 0 ? 'left' : 'right';
         node.textContent = side === 0 ? ARROW.left : ARROW.right;
       }
@@ -377,6 +396,7 @@ export default function SwimScreen({ room, me, netRef, sendInput, event }) {
             where the player is already looking — as its own item in a row it
             was a third thing competing for a strip only wide enough for two. */}
         <div
+          ref={laneRef}
           className={[
             'relative h-24 overflow-hidden rounded-2xl border',
             arenaOk ? 'border-white/15 bg-black/55' : 'mt-5 border-neutral-800 bg-neutral-900/70',
